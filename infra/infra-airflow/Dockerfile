@@ -19,10 +19,5 @@ RUN pip install --no-cache-dir --constraint "${AIRFLOW_CONSTRAINTS_LOCATION}" \
 RUN pip install --no-cache-dir --constraint "${AIRFLOW_CONSTRAINTS_LOCATION}" \
     apache-airflow-providers-docker==3.12.2
 
-RUN pip install --no-cache-dir --constraint "${AIRFLOW_CONSTRAINTS_LOCATION}" \
-    "openai" \
-    "sentence-transformers" \
-    "chromadb" \
-    "yt-dlp" \
-    "youtube-transcript-api" \
-    "requests"
+COPY --chown=airflow:0 requirements.txt /opt/airflow/requirements.txt
+RUN pip install --no-cache-dir --constraint "${AIRFLOW_CONSTRAINTS_LOCATION}" -r /opt/airflow/requirements.txt

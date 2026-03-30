@@ -90,7 +90,3 @@ async def ask_question_stream(
             "X-Accel-Buffering": "no",  # Disable nginx proxy buffering
         },
     )
-
-
-
-
