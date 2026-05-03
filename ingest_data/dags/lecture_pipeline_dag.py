@@ -143,6 +143,7 @@ def task_ingest_chromadb(**context):
         video_id=video_id,
         collection_name=ingest_chromadb.DEFAULT_COLLECTION_NAME,
         persist_directory=os.environ.get("CHROMA_PERSIST_DIR", ingest_chromadb.DEFAULT_PERSIST_DIR),
+        batch_size=int(os.environ.get("INGEST_EMBED_BATCH_SIZE", "32")),
     )
     print(f"Ingested {n} chunks for video_id={video_id}")
     return n

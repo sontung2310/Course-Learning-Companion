@@ -81,7 +81,7 @@ class RetrievalService:
         alpha: float = 0.5,
         *,
         where: Optional[Dict[str, Any]] = None,
-        metadata_boost: float = 0.2,
+        metadata_boost: float = 0.8,
         use_lecture_metadata_boost: bool = True,
     ) -> List[Dict[str, Any]]:
         """
@@ -95,6 +95,7 @@ class RetrievalService:
         """
         q_emb = self.model.encode([question], normalize_embeddings=True).tolist()
         lecture_n = self._infer_lecture_week_number(question) if use_lecture_metadata_boost else None
+        
         n_results = initial_k + 15 if lecture_n is not None else initial_k
         res = self.collection.query(
             query_embeddings=q_emb,

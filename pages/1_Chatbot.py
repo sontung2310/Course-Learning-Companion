@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from typing import Any, Dict, Generator
+from typing import Any, Dict, Generator, Optional, Tuple
 
 import requests
 import streamlit as st
@@ -38,7 +38,10 @@ def _post_chat(
 def _post_chat_stream(
     api_base_url: str, user_input: str, session_id: str, user_id: str
 ) -> Generator[str, None, None]:
-    """Call SSE streaming endpoint and yield text chunks for st.write_stream()."""
+    """Backward-compatible text-only stream (no rollback support).
+
+    Kept for reference; the UI below uses the event-based stream so it can handle rollback.
+    """
     url = f"{api_base_url}/agents/personalized-learning/stream"
     payload = {
         "user_input": user_input,
@@ -64,7 +67,7 @@ def _post_chat_stream(
                 continue
 
             event_type = event.get("type")
-            if event_type == "chunk":
+            if event_type == "token":
                 content = event.get("content", "")
                 if content:
                     yield content
@@ -72,6 +75,7 @@ def _post_chat_stream(
                 st.session_state["_last_stream_meta"] = {
                     "use_rag": event.get("use_rag"),
                     "from_cache": event.get("from_cache", False),
+                    "final_source": event.get("final_source"),
                 }
                 # Cache hits only emit ``final`` (no token chunks). ``write_stream`` only
                 # renders yielded strings, so surface the full cached answer here.
@@ -81,6 +85,73 @@ def _post_chat_stream(
                         yield full
             elif event_type == "error":
                 raise RuntimeError(event.get("message", "Streaming error from server"))
+
+
+def _post_chat_stream_events(
+    api_base_url: str, user_input: str, session_id: str, user_id: str
+) -> Generator[Dict[str, Any], None, None]:
+    """Call SSE endpoint and yield parsed JSON events."""
+    url = f"{api_base_url}/agents/personalized-learning/stream"
+    payload = {
+        "user_input": user_input,
+        "session_id": session_id or None,
+        "user_id": user_id or None,
+    }
+    with requests.post(url, json=payload, stream=True, timeout=180) as r:
+        r.raise_for_status()
+        for raw_line in r.iter_lines():
+            if not raw_line:
+                continue
+            line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+            if not line.startswith("data: "):
+                continue
+            data = line[6:]
+            if data == "[DONE]":
+                break
+            try:
+                event = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            yield event
+
+
+def _render_event_stream(
+    events: Generator[Dict[str, Any], None, None],
+) -> Tuple[str, Dict[str, Any]]:
+    """Render event stream with rollback support. Returns (final_answer, meta)."""
+    placeholder = st.empty()
+    buffer = ""
+    meta: Dict[str, Any] = {"use_rag": None, "from_cache": False, "final_source": None}
+
+    for event in events:
+        et = event.get("type")
+        if et == "token":
+            content = event.get("content") or ""
+            if content:
+                buffer += content
+                placeholder.markdown(buffer)
+        elif et == "confirmed":
+            # Optional UI hint; we keep the text as-is and just mark it confirmed.
+            meta["confirmed"] = True
+        elif et == "rollback":
+            buffer = ""
+            placeholder.markdown("")
+            meta["rolled_back"] = True
+            meta["rollback_reason"] = event.get("reason")
+            meta["rollback_verdict"] = event.get("verdict")
+        elif et == "final":
+            meta["use_rag"] = event.get("use_rag")
+            meta["from_cache"] = bool(event.get("from_cache", False))
+            meta["final_source"] = event.get("final_source")
+            final_text = (event.get("response") or "").strip()
+            if meta["from_cache"] and final_text:
+                buffer = final_text
+                placeholder.markdown(buffer)
+            return buffer, meta
+        elif et == "error":
+            raise RuntimeError(event.get("message", "Streaming error from server"))
+
+    return buffer, meta
 
 
 st.title("Chatbot")
@@ -140,18 +211,19 @@ if prompt:
     with st.chat_message("assistant"):
         if use_streaming:
             try:
-                answer = st.write_stream(
-                    _post_chat_stream(
+                answer, meta = _render_event_stream(
+                    _post_chat_stream_events(
                         api_base_url=api_base_url,
                         user_input=prompt,
                         session_id=session_id,
                         user_id=user_id,
                     )
                 )
-                meta = st.session_state.get("_last_stream_meta", {})
                 use_rag = meta.get("use_rag")
                 if meta.get("from_cache"):
                     st.caption("_Served from cache_")
+                elif meta.get("rolled_back"):
+                    st.caption("_Retrieval answer replaced after groundedness check_")
                 elif use_rag is not None:
                     st.caption(f"use_rag: `{use_rag}`")
             except (requests.RequestException, RuntimeError) as e:

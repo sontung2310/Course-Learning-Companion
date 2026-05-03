@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stanford CS231N – Lecture 2: Image Classification with Linear Classifiers</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      line-height: 1.6;
+      color: #333;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: #f5f5f5;
+    }
+
+    .container {
+      background-color: white;
+      padding: 40px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+
+    h1 {
+      color: #2c3e50;
+      border-bottom: 3px solid #3498db;
+      padding-bottom: 10px;
+      margin-bottom: 30px;
+    }
+
+    .segment {
+      margin-bottom: 50px;
+      padding: 30px;
+      background-color: #fafafa;
+      border-left: 4px solid #3498db;
+      border-radius: 4px;
+    }
+
+    .segment h2 {
+      color: #2c3e50;
+      margin-top: 0;
+      margin-bottom: 20px;
+    }
+
+    .segment-frame {
+      text-align: center;
+      margin: 20px 0;
+    }
+
+    .segment-frame img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 8px;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    }
+
+    .segment-content {
+      margin-top: 20px;
+    }
+
+    .segment-content p {
+      margin-bottom: 15px;
+    }
+
+    .segment-content ul,
+    .segment-content ol {
+      margin-left: 20px;
+      margin-bottom: 15px;
+    }
+
+    .segment-content li {
+      margin-bottom: 8px;
+    }
+
+    .segment-content strong {
+      color: #2c3e50;
+    }
+
+    .timestamp {
+      color: #7f8c8d;
+      font-size: 0.9em;
+      font-style: italic;
+      margin-bottom: 15px;
+    }
+
+    hr {
+      border: none;
+      border-top: 1px solid #ecf0f1;
+      margin: 40px 0;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>Stanford CS231N – Lecture 2: Image Classification with Linear Classifiers</h1>
+    <p style="color: #7f8c8d; margin-bottom: 30px;">
+      This summary highlights the key discussions from the lecture video,
+      with visual frames captured at important moments.
+    </p>
+
+    <p style="color: #7f8c8d; margin-top: -10px; margin-bottom: 30px;">
+      Video: <em>https://www.youtube.com/watch?v=pdqofxJeBN8</em>
+    </p>
+
+    <div class="segment">
+      <h2>1. Understanding Image Classification: A Data-Driven Perspective</h2>
+      <div class="timestamp">Time: 00:05 - 16:50</div>
+
+      <div class="segment-frame">
+        <img src="frames/segment_01_Introduction_to_Image_Classification_and_Data-Driven_Approaches.jpg"
+          alt="Frame from 00:05">
+      </div>
+
+      <div class="segment-content">
+        <h3>Introduction to Image Classification and Data-Driven Approaches</h3>
+
+        <p><strong>Image classification</strong> is the task of assigning a label from a fixed set (such as
+          <em>cat</em>, <em>dog</em>, or <em>truck</em>) to an input image. While this is straightforward for humans,
+          computers interpret images as numbers arranged in matrices or tensors.</p>
+
+        <p>For example, a color image sized 800x600 has three layers representing the <strong>Red, Green, and Blue
+            (RGB)</strong> channels, forming an 800 x 600 x 3 tensor. The main challenge arises because small changes in
+          camera position, lighting, or background can cause significant variations in pixel values—even when the object
+          remains the same.</p>
+
+        <h3>Key Definitions</h3>
+        <ul>
+          <li><strong>Image Classification:</strong> The task of assigning a predefined label to an image.</li>
+          <li><strong>Tensor:</strong> A multi-dimensional array of numbers. In images, it holds pixel values across
+            width, height, and color channels.</li>
+          <li><strong>RGB (Red Green Blue):</strong> The three color channels used to represent colors in images, each
+            with pixel values typically between 0 and 255.</li>
+          <li><strong>Data-Driven Approach:</strong> A method that uses data examples to learn how to solve a task,
+            instead of manually writing rules.</li>
+        </ul>
+
+        <h3>Core Concepts</h3>
+        <ul>
+          <li><strong>Challenges for Machines:</strong> Machines find image classification difficult because pixel
+            values vary with lighting, viewpoint, scale, and background.</li>
+          <li><strong>Limitations of Traditional Methods:</strong> Rule-based algorithms attempted to detect edges and
+            patterns but were hard to scale and required complex, object-specific rules.</li>
+          <li><strong>Data-Driven Solutions:</strong> These methods gather large sets of labeled images and train a
+            classifier—a function that predicts labels for new images.</li>
+          <li><strong>Process Overview:</strong> The typical workflow involves collecting data, training a model, and
+            evaluating its performance on new data.</li>
+        </ul>
+
+        <h3>Important Notes</h3>
+        <ul>
+          <li><em>Pixel Value Range:</em> Pixel values range from 0 to 255 because images are usually stored with 8-bit
+            color depth per channel.</li>
+          <li><em>Impact of Small Changes:</em> Minor changes like camera movement can completely alter raw pixel data,
+            making simple matching ineffective.</li>
+          <li><em>Difficulty of Manual Coding:</em> Manually coding all steps of object recognition is very challenging
+            and inefficient.</li>
+          <li><em>Advantage of Data-Driven Learning:</em> This approach allows models to learn patterns from examples
+            rather than relying on hand-coded rules.</li>
+        </ul>
+
+        <p><em>Understanding these fundamentals is crucial for appreciating how modern image classification systems
+            operate and why data-driven methods have become the standard approach.</em></p>
+      </div>
+    </div>
+    <hr>
+
+    <div class="segment">
+      <h2>2. Nearest Neighbor Classifier: Fundamentals and Practical Insights</h2>
+      <div class="timestamp">Time: 16:50 - 29:00</div>
+
+      <div class="segment-frame">
+        <img src="frames/segment_02_Nearest_Neighbor_Classifier__Basics_and_Implementation.jpg" alt="Frame from 16:50">
+      </div>
+
+      <div class="segment-content">
+        <h3>Understanding the Nearest Neighbor Classifier</h3>
+        <p>The <strong>nearest neighbor classifier</strong> is a straightforward, data-driven model used for labeling
+          images based on similarity. It operates by comparing a test image to all stored training images and assigning
+          the label of the most similar one.</p>
+
+        <h3>How It Works</h3>
+        <ul>
+          <li><strong>Training Step:</strong> Simply store all training images and their corresponding labels.</li>
+          <li><strong>Prediction Step:</strong> For a given test image, calculate the distance to each stored image
+            using a <strong>distance function</strong>, then assign the label of the closest image.</li>
+        </ul>
+
+        <h3>Key Definitions</h3>
+        <ul>
+          <li><strong>Nearest Neighbor Classifier:</strong> A method that labels an input by finding the closest example
+            from stored training data.</li>
+          <li><strong>Distance Function:</strong> A metric to measure how different or similar two images are.</li>
+          <li><strong>L1 Distance (Manhattan Distance):</strong> The sum of the absolute differences of corresponding
+            pixel values between two images.</li>
+        </ul>
+
+        <h3>Core Concepts</h3>
+        <ul>
+          <li><strong>Training is simple:</strong> Just remember all images and labels.</li>
+          <li><strong>Prediction involves distance calculations:</strong> Compute distances from the input to all stored
+            images and select the label of the closest one.</li>
+          <li><strong>L1 distance:</strong> A common, intuitive way to measure similarity by summing pixel differences.
+          </li>
+          <li><strong>Data space partitioning:</strong> The algorithm divides the data space so each region corresponds
+            to one class based on the nearest neighbor.</li>
+          <li><strong>K Nearest Neighbors:</strong> Using more neighbors can help reduce errors caused by noise or
+            outliers.</li>
+        </ul>
+
+        <h3>Important Notes to Consider</h3>
+        <ul>
+          <li><em>Prediction time can be slow</em> because it requires comparing the test image to all training images,
+            resulting in <strong>O(n)</strong> operations.</li>
+          <li>The nearest neighbor classifier works best as a <strong>simple baseline</strong> but does not scale well
+            for large datasets.</li>
+          <li>The <strong>choice of distance function</strong> and the number of neighbors (<strong>K</strong>)
+            significantly affect performance.</li>
+          <li>Using <strong>K=1</strong> can lead to <em>overfitting</em> by memorizing training data perfectly, which
+            harms generalization.</li>
+        </ul>
+      </div>
+    </div>
+    <hr>
+
+    <div class="segment">
+      <h2>3. Navigating Challenges and Enhancing Nearest Neighbor Classification</h2>
+      <div class="timestamp">Time: 29:00 - 39:52</div>
+
+      <div class="segment-frame">
+        <img src="frames/segment_03_Challenges_in_Nearest_Neighbor_Classification_and_Improvements.jpg"
+          alt="Frame from 29:00">
+      </div>
+
+      <div class="segment-content">
+        <h3>Understanding Challenges in Nearest Neighbor Classification</h3>
+        <p>The <strong>nearest neighbor classification</strong> method, while intuitive and effective in many scenarios,
+          faces several challenges that can impact its accuracy and reliability.</p>
+        <p>One common issue is that sometimes the algorithm predicts a label based on <strong>noise or outliers</strong>
+          in the data. To address this, increasing the value of <strong>K</strong>—the number of neighbors
+          considered—helps by incorporating multiple neighbors into the decision process. However, this can lead to
+          <em>uncertain regions</em> where neighbors disagree on the label, creating ambiguity.</p>
+
+        <h3>Key Definitions</h3>
+        <ul>
+          <li><strong>K Nearest Neighbor (K-NN):</strong> A method that uses the <em>K</em> closest neighbors to decide
+            the label by majority voting.</li>
+          <li><strong>Hyperparameters:</strong> Settings chosen before training that affect the model’s behavior, such
+            as <em>K</em> in K-NN or the distance function.</li>
+          <li><strong>Hyperparameter Tuning:</strong> The process of finding the best hyperparameters by testing
+            different values.</li>
+          <li><strong>Validation Set:</strong> A subset of training data used to evaluate model performance for tuning
+            hyperparameters.</li>
+          <li><strong>Cross Validation:</strong> Splitting training data into several parts, training on some and
+            validating on others repeatedly to get a reliable estimate.</li>
+        </ul>
+
+        <h3>Key Concepts for Improving K-NN</h3>
+        <ul>
+          <li><strong>Increasing K</strong> smooths the decision boundary and reduces sensitivity to noise.</li>
+          <li><strong>Avoid tuning hyperparameters on the training data alone</strong>, as this leads to overfitting.
+          </li>
+          <li><strong>Using the test set for hyperparameter selection is cheating</strong> and causes poor
+            generalization to new data.</li>
+          <li><strong>Employing a separate validation set or cross-validation</strong> is the best practice for tuning
+            hyperparameters effectively.</li>
+          <li><strong>Cross-validation</strong> averages results from multiple splits, providing a more reliable
+            estimate of model performance.</li>
+        </ul>
+
+        <h3>Important Notes to Keep in Mind</h3>
+        <ul>
+          <li><em>Cross-validation</em> can be slower and less practical with very large datasets but offers more
+            reliable hyperparameter choices.</li>
+          <li><strong>Validation sets must represent the overall data well</strong> to be effective; poor validation
+            sets may mislead the tuning process.</li>
+          <li>In ambiguous regions where <em>K</em> neighbors are equally divided among labels, the algorithm often
+            resorts to <em>random guessing</em>.</li>
+        </ul>
+      </div>
+    </div>
+    <hr>
+
+    <div class="segment">
+      <h2>4. Understanding L1 and L2 Distance Functions in Classification</h2>
+      <div class="timestamp">Time: 29:41 - 35:00</div>
+
+      <div class="segment-frame">
+        <img src="frames/segment_04_Distance_Functions__L1_vs._L2_and_Their_Effects_on_Classification.jpg"
+          alt="Frame from 29:41">
+      </div>
+
+      <div class="segment-content">
+        <h3>Comparing L1 and L2 Distance Functions in Classification</h3>
+
+        <p>In classification tasks, measuring the distance between images or feature vectors is crucial. Two popular
+          distance functions used are <strong>L1 distance</strong> and <strong>L2 distance</strong>. Understanding their
+          differences helps in choosing the right metric for your problem.</p>
+
+        <h3>What Are L1 and L2 Distances?</h3>
+        <ul>
+          <li><strong>L1 Distance (Manhattan Distance):</strong> The sum of the absolute differences between pixels or
+            features. Imagine moving along a grid, like navigating city blocks.</li>
+          <li><strong>L2 Distance (Euclidean Distance):</strong> The square root of the sum of squared differences
+            between pixels or features. This is the straight-line, "as-the-crow-flies" distance.</li>
+        </ul>
+
+        <h3>Key Characteristics</h3>
+        <ul>
+          <li><strong>L1 distance</strong> produces <em>diamond-shaped</em> equal-distance contours, which look like
+            squares rotated by 45 degrees.</li>
+          <li><strong>L2 distance</strong> produces <em>circular</em> equal-distance contours.</li>
+          <li><strong>L1 distance</strong> is <em>more sensitive</em> to changes in individual features, preserving
+            feature information better.</li>
+          <li><strong>L2 distance</strong> is <em>less sensitive</em> to rotations of feature axes and treats features
+            more uniformly.</li>
+          <li>The choice between L1 and L2 affects classification boundaries and depends on the nature of the features.
+          </li>
+        </ul>
+
+        <h3>Important Considerations</h3>
+        <ul>
+          <li><em>When features have meaningful interpretations</em>, such as pixel intensities or specific
+            measurements, <strong>L1 distance</strong> might be the better choice.</li>
+          <li><em>For arbitrary or transformed features</em>, where uniform treatment of features is preferred,
+            <strong>L2 distance</strong> is often more appropriate.</li>
+          <li><em>Visualizing distance functions</em> can provide valuable insights into how classification boundaries
+            form and behave.</li>
+        </ul>
+
+        <p><em>Choosing the right distance function is a key step in building effective classifiers and understanding
+            your data's geometry.</em></p>
+      </div>
+    </div>
+    <hr>
+
+    <div class="segment">
+      <h2>5. Understanding Nearest Neighbor Classification: Key Concepts and Practical Insights</h2>
+      <div class="timestamp">Time: 35:00 - 46:26</div>
+
+      <div class="segment-frame">
+        <img src="frames/segment_05_Summary_and_Practical_Insights_on_Nearest_Neighbor_Classification.jpg"
+          alt="Frame from 35:00">
+      </div>
+
+      <div class="segment-content">
+        <h3>Recap of Nearest Neighbor Classification</h3>
+        <p>The <strong>nearest neighbor</strong> classifier is a simple and intuitive method that serves as an excellent
+          introduction to fundamental machine learning concepts such as <strong>distance functions</strong> and
+          <strong>hyperparameters</strong>. Despite its simplicity, it has important limitations. For example,
+          <em>pixel-wise distances</em> often fail in image classification because slight changes to an image can cause
+          large differences in distance, even though humans perceive the images as essentially the same.</p>
+
+        <h3>Key Definitions</h3>
+        <ul>
+          <li><strong>Outlier:</strong> A data point that differs significantly from others and may cause errors in
+            classification.</li>
+          <li><strong>Majority Voting:</strong> The process of choosing the label that appears most frequently among the
+            <em>K</em> nearest neighbors.</li>
+        </ul>
+
+        <h3>Important Concepts to Remember</h3>
+        <ul>
+          <li><strong>Unclear Classification Regions:</strong> Areas where the classifier struggles to decide can
+            highlight where additional data collection is necessary.</li>
+          <li><strong>Effect of Increasing K:</strong> Increasing the number of neighbors (<em>K</em>) generally
+            improves prediction stability but may also create ambiguous regions where the algorithm cannot confidently
+            classify.</li>
+          <li><strong>Visualization Tools:</strong> These are valuable for exploring how different values of <em>K</em>
+            and various distance metrics impact classification results.</li>
+          <li><strong>Complexity in Real Image Classification:</strong> Raw pixel distances are insufficient for
+            practical image classification tasks, which require more sophisticated approaches.</li>
+        </ul>
+
+        <h3>Practical Notes</h3>
+        <ul>
+          <li><strong>Scalability:</strong> Nearest neighbor prediction becomes slower as dataset size grows, limiting
+            its use in large-scale applications.</li>
+          <li><strong>Educational Use:</strong> It remains a useful tool for learning and experimentation due to its
+            simplicity.</li>
+          <li><strong>Advanced Techniques:</strong> Practical image classifiers rely on better features or learned
+            representations rather than raw pixel comparisons.</li>
+        </ul>
+
+        <p><em>In summary, while nearest neighbor classification is foundational and insightful for understanding
+            machine learning basics, real-world image classification demands more advanced methods to handle complexity
+            and scale effectively.</em></p>
+      </div>
+    </div>
+    <hr>
+
+    <div class="segment">
+      <h2>6. Understanding Linear Classifiers: Foundations for Deep Learning</h2>
+      <div class="timestamp">Time: 46:26 - 53:51</div>
+
+      <div class="segment-frame">
+        <img src="frames/segment_06_Introduction_to_Linear_Classifiers_and_Their_Role_in_Deep_Learning.jpg"
+          alt="Frame from 46:26">
+      </div>
+
+      <div class="segment-content">
+        <h3>Introduction to Linear Classifiers</h3>
+        <p><strong>Linear classifiers</strong> are fundamental building blocks in the world of neural networks and deep
+          learning. They work by using <strong>learned weights</strong> to map input images to output scores for each
+          class, enabling the model to make predictions based on the input data.</p>
+
+        <h3>How Linear Classifiers Work</h3>
+        <p>The core idea behind a linear classifier is to find a <strong>weight matrix <em>W</em></strong> and a
+          <strong>bias <em>b</em></strong> that, when multiplied by the input vector <em>x</em>, produce scores
+          corresponding to each class. This approach differs from methods like nearest neighbor classification because
+          it <em>learns parameters</em> during training, summarizing knowledge in a fixed-size model.</p>
+
+        <h3>Key Definitions</h3>
+        <ul>
+          <li><strong>Linear Classifier:</strong> A model that computes scores for each class by multiplying input
+            features by learned weights and adding a bias.</li>
+          <li><strong>Parameters (<em>W</em>):</strong> The weights learned during training that map inputs to outputs.
+          </li>
+          <li><strong>Bias (<em>b</em>):</strong> A value added to the weighted sum to allow shifting decision
+            boundaries.</li>
+          <li><strong>Parametric Model:</strong> A model that summarizes knowledge with a fixed number of parameters.
+          </li>
+          <li><strong>Neural Network:</strong> A complex model composed of many layers, including linear classifiers.
+          </li>
+        </ul>
+
+        <h3>Important Concepts to Remember</h3>
+        <ul>
+          <li>The input image is reshaped into a vector; for example, a 32x32x3 image becomes a vector of size 3072.
+          </li>
+          <li>The weight matrix <em>W</em> has dimensions corresponding to the number of classes by the number of input
+            features.</li>
+          <li>The bias term <em>b</em> helps adjust the decision boundary for better classification performance.</li>
+          <li>Linear classifiers find boundaries (lines or hyperplanes) that separate classes in feature space.</li>
+          <li>They serve as the foundation for more advanced deep learning models.</li>
+        </ul>
+
+        <h3>Important Notes</h3>
+        <p><em>Keep in mind:</em></p>
+        <ul>
+          <li><strong>Linear classifiers cannot solve problems where classes are not separated by a straight line or
+              plane.</strong></li>
+          <li>The <strong>bias term</strong> is crucial for creating flexible decision boundaries that are not
+            restricted to passing through the origin.</li>
+        </ul>
+      </div>
+    </div>
+    <hr>
+
+    <div class="segment">
+      <h2>7. Understanding the Geometric and Visual Aspects of Linear Classifiers</h2>
+      <div class="timestamp">Time: 53:51 - 55:58</div>
+
+      <div class="segment-frame">
+        <img src="frames/segment_07_Geometric_and_Visual_Interpretation_of_Linear_Classifiers.jpg"
+          alt="Frame from 53:51">
+      </div>
+
+      <div class="segment-content">
+        <h3>Geometric and Visual Interpretation of Linear Classifiers</h3>
+
+        <p><strong>Linear classifiers</strong> separate classes by creating <strong>decision boundaries</strong> in the
+          feature space. In two dimensions, these boundaries are lines, while in higher dimensions, they become
+          hyperplanes.</p>
+
+        <p>Each row of the weight matrix <strong>W</strong> acts as a <strong>template</strong> for a class. The
+          classifier scores input images based on how well they match each template, effectively recognizing the class.
+        </p>
+
+        <h3>Key Definitions</h3>
+        <ul>
+          <li><strong>Decision Boundary:</strong> The line or surface that separates different class regions in feature
+            space.</li>
+          <li><strong>Hyperplane:</strong> A flat subspace with one less dimension than the feature space that separates
+            data classes.</li>
+          <li><strong>Template:</strong> A vector representing the learned weights for a class, used to recognize that
+            class.</li>
+        </ul>
+
+        <h3>Key Concepts</h3>
+        <ul>
+          <li>In 2D, a linear classifier splits the plane into distinct regions corresponding to different classes.</li>
+          <li>Without a bias term, decision boundaries must pass through the origin, which <em>limits flexibility</em>
+            in separating classes.</li>
+          <li>Including a bias allows decision boundaries to shift, enabling better separation of classes.</li>
+          <li>The visual templates learned by the classifier often reveal intuitive patterns resembling parts of
+            objects.</li>
+        </ul>
+
+        <h3>Important Notes</h3>
+        <p><em>Linear boundaries have limitations:</em></p>
+        <ul>
+          <li>They <strong>cannot separate classes arranged in complex, intertwined patterns</strong>.</li>
+          <li>For such non-linearly separable data, more complex models are necessary.</li>
+        </ul>
+      </div>
+    </div>
+    <hr>
+
+    <div class="segment">
+      <h2>8. Mastering Parameter Selection for Linear Classifiers: Loss Functions and Optimization</h2>
+      <div class="timestamp">Time: 55:58 - 66:54</div>
+
+      <div class="segment-frame">
+        <img src="frames/segment_08_Choosing_Parameters_for_Linear_Classifiers__Loss_Function_and_Optimization.jpg"
+          alt="Frame from 55:58">
+      </div>
+
+      <div class="segment-content">
+        <h3>Understanding How to Learn Parameters for Linear Classifiers</h3>
+        <p>To build an effective linear classifier, we need to learn the parameters <strong>W</strong> (weights) and the
+          bias. This learning process revolves around using a <strong>loss function</strong> to measure how poorly the
+          classifier performs on training data. Our ultimate goal is to <em>minimize this loss</em> by adjusting
+          <strong>W</strong> accordingly.</p>
+
+        <h3>Key Definitions</h3>
+        <ul>
+          <li><strong>Loss Function (Objective Function):</strong> A mathematical function that quantifies how wrong the
+            classifier’s predictions are.</li>
+          <li><strong>Optimization:</strong> The process of changing model parameters to minimize the loss.</li>
+          <li><strong>Softmax Function:</strong> Converts raw scores into probabilities over classes.</li>
+          <li><strong>Logits:</strong> The raw scores output from the linear classifier before applying softmax.</li>
+          <li><strong>Cross-Entropy Loss:</strong> Measures the difference between predicted probabilities and true
+            labels.</li>
+          <li><strong>KL Divergence (Kullback–Leibler Divergence):</strong> Measures how one probability distribution
+            differs from another.</li>
+          <li><strong>One-hot Encoding:</strong> Represents class labels with a vector where the true class is 1 and
+            others are 0.</li>
+        </ul>
+
+        <h3>Core Concepts Explained</h3>
+        <ul>
+          <li>The <strong>logits</strong> produced by the linear classifier are transformed into probabilities using the
+            <strong>softmax function</strong>.</li>
+          <li>The output of softmax sums to 1, representing the probability distribution over all classes.</li>
+          <li>Our objective is to <em>maximize the probability of the correct class</em>, which is equivalent to
+            minimizing the <strong>negative log probability</strong>.</li>
+          <li>The <strong>negative log likelihood loss</strong> matches the <strong>cross-entropy loss</strong> when
+            using one-hot encoded labels.</li>
+          <li><strong>Cross-entropy</strong> and <strong>KL divergence</strong> offer an information-theoretic
+            perspective on the loss function.</li>
+          <li>At initialization, weights are random, so predicted probabilities are nearly uniform, resulting in the
+            <em>maximum loss</em>.</li>
+          <li>The initial loss value corresponds to the <strong>logarithm of the number of classes</strong> when
+            predictions are uniform.</li>
+        </ul>
+
+        <h3>Important Notes to Remember</h3>
+        <ul>
+          <li><em>Minimizing the loss via optimization is the fundamental mechanism for learning</em> in both linear
+            classifiers and neural networks.</li>
+          <li>Understanding the loss function helps us improve the model by making predictions closer to the true
+            labels.</li>
+          <li><strong>Softmax</strong> and <strong>cross-entropy</strong> are standard, powerful tools in classification
+            problems.</li>
+          <li>The next steps involve learning efficient methods to find <strong>W</strong> that minimize the loss —
+            topics covered in future lectures.</li>
+        </ul>
+      </div>
+    </div>
+
+    <p style="margin-top: 40px; color: #7f8c8d; font-size: 0.9em; text-align: center;">
+      Generated automatically from lecture transcript and video analysis.
+    </p>
+  </div>
+</body>
+
+</html>

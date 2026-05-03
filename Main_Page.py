@@ -84,7 +84,10 @@ with col_summary:
         Instead of only watching videos, learners can read clear explanations
         that summarize the main lecture concepts. Each report includes key
         discussions with the corresponding time they occur in the video, helping
-        learners study the course more efficiently.
+        learners study the course more efficiently. On that page you can also
+        paste a YouTube link to start the **ingestion pipeline** in Airflow
+        (transcript, HTML summary, and vector store), then refresh to open the
+        new summary when the run finishes.
         """
     )
 

@@ -59,10 +59,16 @@ async def ask_question_stream(
 
     Event shapes emitted over the stream:
 
-    - ``data: {"type": "chunk",  "content": "..."}``
-      One TEXT token/fragment yielded as it is generated.
+    - ``data: {"type": "token", "content": "...", "source": "direct"|"retrieval"|"search"}``
+      One TEXT fragment to append to the current buffer.
 
-    - ``data: {"type": "final",  "response": "...", "use_rag": true|false|null, "from_cache": bool}``
+    - ``data: {"type": "confirmed", "source": "retrieval"}``
+      The optimistically streamed retrieval answer passed groundedness; client may lock the answer.
+
+    - ``data: {"type": "rollback", "reason": "...", "verdict": {...}}``
+      The retrieval answer failed groundedness; client should clear the buffer and expect a new answer stream.
+
+    - ``data: {"type": "final", "response": "...", "use_rag": true|false|null, "from_cache": bool, "final_source": str}``
       Emitted once after the last chunk; contains the full assembled response.
 
     - ``data: {"type": "error",  "message": "..."}``

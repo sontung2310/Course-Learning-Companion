@@ -82,10 +82,14 @@ x-airflow-common:
     HF_HOME: /opt/airflow/hf_cache
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
-    - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
+    # Named volume (not bind mount): avoids OSError errno 35 on Docker Desktop for Mac when the
+    # scheduler forks DagFileProcessorManager and RotatingFileHandler seeks shared log files.
+    - airflow-logs-volume:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
-    - ${AIRFLOW_PROJ_DIR:-.}/hf_cache:/opt/airflow/hf_cache
+    # Named volume: PyTorch/sentence-transformers mmap model weights; macOS bind mounts often
+    # trigger SIGBUS (child exit -7) during load. Data persists in Docker; docker volume inspect to locate.
+    - airflow-hf-cache-volume:/opt/airflow/hf_cache
     - ../../reports:/opt/airflow/reports
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
@@ -176,6 +180,10 @@ services:
       # Required to handle warm shutdown of the celery workers properly
       # See https://airflow.apache.org/docs/docker-stack/entrypoint.html#signal-propagation
       DUMB_INIT_SETSID: "0"
+      # Reduce memory spikes / fork hazards when loading SentenceTransformer in tasks
+      TOKENIZERS_PARALLELISM: "false"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
@@ -248,6 +256,9 @@ services:
         fi
         mkdir -p /sources/logs /sources/dags /sources/plugins
         chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
+        # Named volumes mount as root:root; Airflow runs as AIRFLOW_UID and must write logs + HF cache.
+        mkdir -p /opt/airflow/logs /opt/airflow/hf_cache
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs /opt/airflow/hf_cache
         exec /entrypoint airflow version
     # yamllint enable rule:line-length
     environment:
@@ -260,7 +271,9 @@ services:
     user: "0:0"
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}:/sources
-  
+      - airflow-logs-volume:/opt/airflow/logs
+      - airflow-hf-cache-volume:/opt/airflow/hf_cache
+
 
   airflow-cli:
     <<: *airflow-common
@@ -308,3 +321,5 @@ services:
 
 volumes:
   postgres-db-volume:
+  airflow-logs-volume:
+  airflow-hf-cache-volume:

@@ -45,8 +45,8 @@ async def lifespan(app: FastAPI):
     # app.state.users_service = Users()
 
     # _startup_log.info("Startup: NeMo Guardrails (RailsConfig + LLMRails)…")
-    # config = RailsConfig.from_path("src/rails")
-    # app.state.rails = LLMRails(config)
+    config = RailsConfig.from_path("src/rails")
+    app.state.rails = LLMRails(config)
 
     # _startup_log.info("Startup complete — accepting requests.")
     long_term_memory = LongTermMemoryService()

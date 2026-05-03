@@ -2,12 +2,14 @@ import os
 from typing import List, Dict, Any, Tuple
 
 import chromadb
+print("chromadb", chromadb.__version__)
 from sentence_transformers import SentenceTransformer
-
+# print("sentence_transformers", sentence_transformers.__version__)
 # Add path to ingest_chromadb.py
 import sys
 # Add path /Users/sontung/Desktop/3.Project/AIDE/Final Project/ingest_chromadb.py
 sys.path.append("/Users/sontung/Desktop/3.Project/AIDE/Final Project")
+sys.path.append("/Users/sontung/Desktop/3.Project/AIDE/Final Project/ingest_data/dags")
 from ingest_chromadb import DEFAULT_COLLECTION_NAME, DEFAULT_EMBED_MODEL  # type: ignore
 
 

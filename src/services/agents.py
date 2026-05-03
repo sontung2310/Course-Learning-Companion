@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Dict, Any, Optional, List, AsyncIterator
+import asyncio
+from typing import Dict, Any, Optional, List, AsyncIterator, Tuple
 
 from crewai import Agent, Task, Crew
 from crewai.types.streaming import StreamChunkType
@@ -411,7 +412,7 @@ class LearningOrchestrator:
         user_message: str,
         assistant_message: str,
         ttl_minutes: int = 60,
-        max_messages: int = 20,
+        max_messages: int = 5,
     ) -> None:
         """Append a user/assistant turn to short-term memory (Redis)."""
         if not session_id or not user_id:
@@ -647,11 +648,15 @@ User question:
         print(f"Retrieval answer: {retrieval_answer}")
 
         # 2. Get same context used by retrieval (for groundedness check)
-        try:
-            chunks = self._retrieval_service.retrieve_vector(question)
-            context_str = _format_retrieved_context(chunks)
-        except Exception:
-            context_str = "(Retrieval context unavailable)"
+        chunks_for_check = getattr(self.agents.retrieval_tool, "last_chunks", None)
+        if isinstance(chunks_for_check, list) and chunks_for_check:
+            context_str = _format_retrieved_context(chunks_for_check)
+        else:
+            try:
+                chunks_for_check = self._retrieval_service.retrieve_vector(question)
+                context_str = _format_retrieved_context(chunks_for_check)
+            except Exception:
+                context_str = "(Retrieval context unavailable)"
 
         # 3. Check groundedness: is the answer fully supported by the context?
         groundedness_task = Task(
@@ -802,8 +807,18 @@ User question:
         Yields events token-by-token during generation using
         ``Crew(stream=True)`` + ``await crew.kickoff_async()``:
 
-        - ``{"type": "chunk",  "content": "..."}``   — one TEXT token/fragment
-        - ``{"type": "final",  "response": "...", "use_rag": bool|None, "from_cache": bool}``
+        Events are JSON objects (sent over SSE in the API layer):
+
+        - ``{"type": "token", "content": "...", "source": "direct"|"retrieval"|"search"}``
+          A text fragment to append to the current buffer.
+
+        - ``{"type": "confirmed", "source": "retrieval"}``
+          The optimistically streamed retrieval answer passed groundedness.
+
+        - ``{"type": "rollback", "reason": "...", "verdict": {...}}``
+          The retrieval answer failed groundedness; UI should clear buffer and expect a new stream.
+
+        - ``{"type": "final", "response": "...", "use_rag": bool|None, "from_cache": bool, "final_source": str}``
         """
         langfuse_client = self.langfuse
         with langfuse_client.start_as_current_observation(
@@ -822,6 +837,7 @@ User question:
                     "response": cached.get("response", ""),
                     "use_rag": cached.get("use_rag", None),
                     "from_cache": True,
+                    "final_source": "cache",
                 }
                 return
 
@@ -919,10 +935,11 @@ Answer:
                 )
                 async for chunk in streaming:
                     if chunk.chunk_type == StreamChunkType.TEXT and chunk.content:
-                        yield {"type": "chunk", "content": chunk.content}
+                        yield {"type": "token", "content": chunk.content, "source": "direct"}
                 # Must exhaust the iterator before accessing .result
                 final_response = streaming.result.raw or ""
                 use_rag = False
+                final_source = "direct"
 
             else:
                 # ── Branch B-1: retrieval answer (stream) ────────────────────────
@@ -946,21 +963,28 @@ User question:
                 streaming = await retrieval_crew.kickoff_async(
                     inputs={"question": question, "chat_history": chat_history_str}
                 )
-                # Buffer retrieval tokens until groundedness passes. If we streamed them
-                # immediately and then fell back to search, the client would concatenate
-                # two answers (retrieval + search).
+                # Optimistically stream retrieval tokens immediately for responsiveness,
+                # but keep a full-text buffer so we can run groundedness once complete.
                 retrieval_stream_parts: List[str] = []
                 async for chunk in streaming:
                     if chunk.chunk_type == StreamChunkType.TEXT and chunk.content:
                         retrieval_stream_parts.append(chunk.content)
+                        yield {"type": "token", "content": chunk.content, "source": "retrieval"}
+
                 retrieval_answer: str = streaming.result.raw or ""
 
                 # ── Branch B-2: groundedness check (non-stream, routing only) ────
-                try:
-                    chunks = self._retrieval_service.retrieve_vector(question)
-                    context_str = _format_retrieved_context(chunks)
-                except Exception:
-                    context_str = "(Retrieval context unavailable)"
+                chunks_for_check = getattr(self.agents.retrieval_tool, "last_chunks", None)
+                if isinstance(chunks_for_check, list) and chunks_for_check:
+                    context_str = _format_retrieved_context(chunks_for_check)
+                else:
+                    # Fallback: only if tool state unavailable.
+                    try:
+                        chunks_for_check = self._retrieval_service.retrieve_vector(question)
+                        context_str = _format_retrieved_context(chunks_for_check)
+                    except Exception:
+                        chunks_for_check = []
+                        context_str = "(Retrieval context unavailable)"
 
                 groundedness_task = Task(
                     description="""You are given:
@@ -976,25 +1000,36 @@ Respond with exactly one JSON object: {"status": "SUPPORTED", "reason": "brief e
                     agents=[self.check_groundedness_agent],
                     tasks=[groundedness_task],
                 )
-                check_result = await groundedness_crew.kickoff_async(
-                    inputs={
-                        "question": question,
-                        "retrieval_answer": retrieval_answer,
-                        "context": context_str,
-                    }
-                )
-                verdict = _parse_groundedness_result(getattr(check_result, "raw", "") or "")
-                is_supported = verdict.get("status", "UNSUPPORTED").strip().upper() == "SUPPORTED"
+                # Run groundedness check concurrently with any UI rendering work.
+                async def _run_groundedness() -> Tuple[Dict[str, str], bool]:
+                    check_result = await groundedness_crew.kickoff_async(
+                        inputs={
+                            "question": question,
+                            "retrieval_answer": retrieval_answer,
+                            "context": context_str,
+                        }
+                    )
+                    verdict = _parse_groundedness_result(getattr(check_result, "raw", "") or "")
+                    is_supported = (
+                        verdict.get("status", "UNSUPPORTED").strip().upper() == "SUPPORTED"
+                    )
+                    return verdict, is_supported
+
+                verdict, is_supported = await asyncio.create_task(_run_groundedness())
 
                 if is_supported:
-                    if retrieval_stream_parts:
-                        for part in retrieval_stream_parts:
-                            yield {"type": "chunk", "content": part}
-                    elif retrieval_answer:
-                        yield {"type": "chunk", "content": retrieval_answer}
+                    # Tell UI it can "lock in" the already-streamed retrieval answer.
+                    yield {"type": "confirmed", "source": "retrieval"}
                     final_response = retrieval_answer
                     use_rag = True
+                    final_source = "retrieval"
                 else:
+                    # Signal the UI to clear the optimistic buffer before we stream fallback.
+                    yield {
+                        "type": "rollback",
+                        "reason": verdict.get("reason", "Groundedness check failed"),
+                        "verdict": verdict,
+                    }
                     # ── Branch B-3: web search fallback (stream) ─────────────────
                     search_task = Task(
                         description="""The lecture-based answer was unreliable. Answer the user's question using web search. Cite sources with URLs.
@@ -1018,9 +1053,10 @@ User question:
                     )
                     async for chunk in streaming:
                         if chunk.chunk_type == StreamChunkType.TEXT and chunk.content:
-                            yield {"type": "chunk", "content": chunk.content}
+                            yield {"type": "token", "content": chunk.content, "source": "search"}
                     final_response = streaming.result.raw or ""
                     use_rag = True
+                    final_source = "search"
 
             # ── Persist history & cache, then emit final event ───────────────────
             final_response = final_response or ""
@@ -1043,5 +1079,11 @@ User question:
                     print(f"ERROR during semantic cache SET (stream): {e}")
 
             obs.update(output=result)
-            yield {"type": "final", "response": final_response, "use_rag": use_rag, "from_cache": False}
+            yield {
+                "type": "final",
+                "response": final_response,
+                "use_rag": use_rag,
+                "from_cache": False,
+                "final_source": final_source if "final_source" in locals() else None,
+            }
 

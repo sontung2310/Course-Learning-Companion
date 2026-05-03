@@ -15,9 +15,10 @@ rails:
   input:
     flows:
       - self check input
-      - user query
-
+      # - user query
   output:
-    flows:
-      - self check output
-      # - self check facts
+    flows: []
+  # output:
+  #   flows:
+  #     - self check output
+  #     # - self check facts
