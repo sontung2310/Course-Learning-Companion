@@ -1,0 +1,49 @@
+# Local run for the FastAPI image built from ./Dockerfile
+#
+# Usage:
+#   docker compose up --build
+#
+# Prerequisites:
+#   - `.env` at the repo root (same vars as local dev; see src/settings.py).
+#   - Inside the container, `localhost` is the container itself. Point
+#     POSTGRES_HOST, REDIS_HOST, MILVUS_HOST, OPENAI_BASE_URL, etc. at
+#     services on your machine (e.g. host.docker.internal on Docker Desktop)
+#     or add db/redis/milvus services to this file and use service names.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: course-learning-api
+    ports:
+      - "${HOST_PORT:-8055}:8055"
+    environment:
+      PORT: "8055"
+      # Use the actual container names on the external infra_network.
+      # (From `docker ps`: infra-langfuse-postgres-1, infra-langfuse-redis-1)
+      DATABASE_URL: "postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@infra-langfuse-postgres-1:5432/postgres"
+      REDIS_HOST: "infra-langfuse-redis-1"
+      # LiteLLM proxy URL used by CrewAI (`src/services/litellm_client.py`)
+      LITELLM_BASE_URL: "http://host.docker.internal:4000"
+      LITELLM_API_KEY: "${LITELLM_API_KEY:-sk-llmops}"
+      # (Optional) if other code paths use OPENAI_BASE_URL
+      OPENAI_BASE_URL: "http://host.docker.internal:4000"
+      LANGFUSE_HOST: "http://host.docker.internal:3000"
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8055/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+    networks:
+      - infra_network
+
+networks:
+  infra_network:
+    external: true

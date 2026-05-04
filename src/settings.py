@@ -24,26 +24,19 @@ class Settings(BaseSettings):
     OPENAI_BASE_URL: str = "http://localhost:4000"
     OPENAI_TEMPERATURE: float = 0.7
 
-    # Milvus configuration
-    MILVUS_HOST: str = "localhost"
-    MILVUS_PORT: str = "19530"
-    MILVUS_COLLECTION: str = "langchain_docs"
-
     # PostgreSQL configuration for long-term memory
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "postgres"
     POSTGRES_USER: str = "postgres"
     POSTGRES_PASSWORD: SecretStr  # optional for local dev; set in .env for real DB
+    DATABASE_URL: str | None = None
 
     # Redis configuration for short-term memory
-    REDIS_HOST: str = "localhost"
-    REDIS_PORT: int = 6379
-    REDIS_DB: int = 0
+    REDIS_HOST: str
+    REDIS_PORT: int
+    REDIS_DB: int
     REDIS_PASSWORD: SecretStr | None = None
-
-    # Redis database for caching
-    REDIS_DB_CACHE: int = 1
 
     # Langfuse configuration
     LANGFUSE_PUBLIC_KEY: SecretStr | None = None

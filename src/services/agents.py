@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import json
-import re
 import asyncio
+import json
 from typing import Dict, Any, Optional, List, AsyncIterator, Tuple
 
 from crewai import Agent, Task, Crew
@@ -13,7 +12,15 @@ from litellm.caching.redis_semantic_cache import RedisSemanticCache
 from nemoguardrails import LLMRails
 
 from src.settings import SETTINGS
+from src.utils import (
+    format_chat_history,
+    format_retrieved_context,
+    normalize_semantic_cache_hit,
+    parse_groundedness_result,
+    parse_rag_decision_result,
+)
 from src.utils.decorators import agent_response_time
+from src.services import prompts
 from src.services.redis_cache import redis_cache
 from src.services.retrieval import RetrievalService
 from src.services.memory import ShortTermMemoryService
@@ -41,8 +48,6 @@ class LearningAgents:
         # Qwen is used for routing / direct answers, OpenAI (gpt-api) for RAG & checks.
         self.qwen_llm = get_qwen_llm()
         self.gpt_llm = get_gpt_api_llm()
-        
-        
 
     def create_rag_decision_agent(self) -> Agent:
         """Create an agent that decides whether the question needs RAG (course/lecture) or not.
@@ -50,52 +55,35 @@ class LearningAgents:
         This agent only returns JSON with a use_rag flag; it does not generate the final answer.
         """
         return Agent(
-            role="RAG Decision Agent",
-            goal="Classify whether a question requires retrieval over course materials (RAG). Output JSON only.",
-            backstory="""You are a query router for an AI learning assistant.
-Your job is to decide if a user question requires retrieving
-information from course materials (RAG).""",
+            role=prompts.RAG_DECISION_ROLE,
+            goal=prompts.RAG_DECISION_GOAL,
+            backstory=prompts.RAG_DECISION_BACKSTORY,
             tools=[],
             verbose=True,
             max_iterations=1,
-            llm=self.qwen_llm,
+            # llm=self.qwen_llm,
+            llm=self.gpt_llm,
         )
 
     def create_direct_answer_agent(self) -> Agent:
         """Create an agent that gives short, direct answers when RAG is not needed."""
         return Agent(
-            role="Direct Answer Agent",
-            goal=(
-                "Answer questions based on popular YouTube course lectures (e.g., Stanford CS336, CS229) and also handle technical questions beyond those courses."
-                "Use short, clear, easy-to-understand language."
-            ),
-            backstory=(
-                """You are a helpful learning assistant created by Tony Bui. You can answer questions based on popular YouTube course lectures (e.g., Stanford CS336, CS229) and also handle technical questions beyond those courses."""
-            ),
+            role=prompts.DIRECT_ANSWER_ROLE,
+            goal=prompts.DIRECT_ANSWER_GOAL,
+            backstory=prompts.DIRECT_ANSWER_BACKSTORY,
             tools=[],
             verbose=True,
             max_iterations=1,
-            llm=self.qwen_llm,
+            # llm=self.qwen_llm,
+            llm=self.gpt_llm,
         )
 
     def create_retrieval_agent(self) -> Agent:
         """Create an agent that retrieves information from the lecture materials (first step in pipeline)."""
         return Agent(
-            role="Lecture Retrieval Agent",
-            goal="Answer the user's question using only information retrieved from the lecture knowledge base; always cite course, lecture number, and video timestamps.",
-            backstory="""You are the first step in a learning-assistant pipeline. Your job is to answer the user's question using ONLY the lecture materials.
-
-Process:
-1. Use the retrieval tool with the user's question to get relevant lecture segments from the knowledge base.
-2. From the tool results, synthesize a clear answer. Use ONLY information that appears in the retrieved segments—do not add facts from general knowledge.
-3. For every claim or fact in your answer, cite the source:
-   - Course name and lecture number (e.g. "Course X, Lecture 3")
-   - Video segment timestamps (start and end) from the retrieved metadata when available.
-
-Rules:
-- If the retrieved segments do not contain enough information to answer the question, respond with "I don't know" and do not guess or invent content.
-- Do not make up course names, lecture numbers, or timestamps; only use values that appear in the retrieval results.
-- Keep your answer focused and grounded in the retrieved context so the next step (groundedness check) can verify it.""",
+            role=prompts.RETRIEVAL_ROLE,
+            goal=prompts.RETRIEVAL_GOAL,
+            backstory=prompts.RETRIEVAL_BACKSTORY,
             tools=[self.retrieval_tool, self.short_term_memory_tool],
             verbose=True,
             max_iterations=2,
@@ -105,35 +93,9 @@ Rules:
     def create_check_groundedness_agent(self) -> Agent:
         """Create an agent that checks if the retrieval answer is fully supported by the context (second step in pipeline)."""
         return Agent(
-            role="Groundedness Check Agent",
-            goal="Decide whether the given answer is fully supported by the retrieved context; if not, return UNSUPPORTED. Output only valid JSON.",
-            backstory="""You are the groundedness gate in the learning-assistant pipeline. You receive:
-- The user's question
-- The answer produced by the retrieval agent
-- The retrieved context (the raw lecture segments that were used)
-
-Your task: Answer two questions.
-1. Is the answer fully supported by the context?
-2. If not supported, return UNSUPPORTED.
-
-Return SUPPORTED only if:
-- All factual claims in the answer can be traced to the retrieved context.
-- Cited course, lecture number, and timestamps match the context.
-- No extra or unsupported information was added.
-
-Return UNSUPPORTED if ANY of the following is true (both "I don't know" and hallucination fall into UNSUPPORTED):
-- The answer is "I don't know" or indicates the lecture had no answer.
-- A factual claim in the answer is NOT present or not supported in the retrieved context.
-- Course name, lecture number, or timestamps do not match the context or were invented.
-- The answer adds details, examples, or conclusions not in the context.
-- The answer contradicts the context.
-
-You MUST respond with exactly one JSON object, no other text or markdown:
-{"status": "SUPPORTED", "reason": "brief explanation"}
-or
-{"status": "UNSUPPORTED", "reason": "brief explanation"}
-
-Use exactly "SUPPORTED" or "UNSUPPORTED" for status. Your output will be parsed to decide whether to return this answer to the user or to call the search agent.""",
+            role=prompts.GROUNDEDNESS_ROLE,
+            goal=prompts.GROUNDEDNESS_GOAL,
+            backstory=prompts.GROUNDEDNESS_BACKSTORY,
             verbose=True,
             max_iterations=2,
             llm=self.gpt_llm,
@@ -142,149 +104,14 @@ Use exactly "SUPPORTED" or "UNSUPPORTED" for status. Your output will be parsed 
     def create_search_agent(self) -> Agent:
         """Create an agent that searches the web when the retrieval answer was UNSUPPORTED (fallback in pipeline)."""
         return Agent(
-            role="Web Search Fallback Agent",
-            goal="Answer the user's question using web search when the lecture-based answer was UNSUPPORTED; cite every source with its URL.",
-            backstory="""You are the fallback step in the learning-assistant pipeline. You are called only when the retrieval agent's answer was UNSUPPORTED (not grounded, "I don't know", or hallucination), so the user still needs an answer.
-
-Process:
-1. Use the short-term memory tool to get the chat history.
-2. Use the search tool to find relevant, up-to-date information for the user's question.
-3. Synthesize a clear answer from the search results. Prefer authoritative or educational sources when possible.
-4. Always cite your sources in a structured way: for each fact or claim, include the source title and the full URL. Format example: "[Source: Title (URL)]" or a short "Sources:" list with URLs at the end.
-
-Rules:
-- Consider the chat history to create the appropriate search queries.
-- Base your answer only on what you found in the search results; do not invent facts or URLs.
-- If search results do not contain enough to answer the question, say "I don't know" and do not guess.
-- Your final response should be the answer to the user plus a clear list or inline citations with URLs so the user can verify.""",
+            role=prompts.SEARCH_ROLE,
+            goal=prompts.SEARCH_GOAL,
+            backstory=prompts.SEARCH_BACKSTORY,
             tools=[TavilySearchTool(), self.short_term_memory_tool],
             verbose=True,
             max_iterations=2,
             llm=self.gpt_llm,
         )
-
-def _format_chat_history(messages: List[Dict[str, Any]]) -> str:
-    """Format message list as readable chat history for prompts."""
-    if not messages:
-        return "No previous conversation."
-    lines = []
-    for m in messages:
-        role = (m.get("role") or "user").lower()
-        content = (m.get("content") or "").strip()
-        if not content:
-            continue
-        label = "User" if role == "user" else "Assistant"
-        lines.append(f"{label}: {content}")
-    return "\n".join(lines) if lines else "No previous conversation."
-
-
-def _format_retrieved_context(chunks: list[Dict[str, Any]]) -> str:
-    """Format retrieved chunks for the groundedness checker."""
-    parts = []
-    for i, chunk in enumerate(chunks, 1):
-        doc = chunk.get("document", "")
-        meta = chunk.get("metadata", {}) or {}
-        parts.append(
-            f"[Segment {i}]\n"
-            f"Content: {doc}\n"
-            f"Metadata: {json.dumps(meta, default=str)}\n"
-        )
-    return "\n".join(parts) if parts else "(No segments retrieved)"
-
-
-def _parse_rag_decision_result(raw: str) -> Dict[str, Any]:
-    """Extract JSON from RAG decision agent output. Default to use_rag=True if unparseable (safe: run RAG)."""
-    text = raw.strip()
-    start = text.find("{")
-    if start >= 0:
-        depth = 0
-        for i in range(start, len(text)):
-            if text[i] == "{":
-                depth += 1
-            elif text[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        out = json.loads(text[start : i + 1])
-                        use_rag = out.get("use_rag", True)
-                        if not isinstance(use_rag, bool):
-                            use_rag = str(use_rag).strip().lower() in ("true", "1", "yes")
-                        return {"use_rag": use_rag}
-                    except json.JSONDecodeError:
-                        break
-    # Fallback: look for use_rag false
-    lower = text.lower()
-    if '"use_rag": false' in lower or "'use_rag': false" in lower:
-        return {"use_rag": False}
-    return {"use_rag": True}
-
-
-def _parse_groundedness_result(raw: str) -> Dict[str, str]:
-    """Extract JSON from groundedness checker output; default to UNSUPPORTED if unparseable."""
-    text = raw.strip()
-    # Try to find a JSON object: from first { to matching }
-    start = text.find("{")
-    if start >= 0:
-        depth = 0
-        for i in range(start, len(text)):
-            if text[i] == "{":
-                depth += 1
-            elif text[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(text[start : i + 1])
-                    except json.JSONDecodeError:
-                        break
-    # Fallback: look for SUPPORTED or UNSUPPORTED in text
-    u = text.upper()
-    if "UNSUPPORTED" in u:
-        return {"status": "UNSUPPORTED", "reason": text[:200] or "Could not parse checker output"}
-    if "SUPPORTED" in u:
-        return {"status": "SUPPORTED", "reason": text[:200]}
-    return {"status": "UNSUPPORTED", "reason": text[:200] or "Could not parse checker output"}
-
-
-def _normalize_semantic_cache_hit(raw: Any) -> Optional[Dict[str, Any]]:
-    """Turn Redis semantic-cache values into ``{response, use_rag}`` for the orchestrator.
-
-    LiteLLM may return our ``json.dumps`` payload as a dict, or (if mixed with other
-    writers) OpenAI-style ``choices`` / ``content`` shapes. Returns ``None`` if no
-    usable assistant text is found so callers can fall through to a real generation.
-    """
-    if raw is None:
-        return None
-    if isinstance(raw, str):
-        s = raw.strip()
-        if not s:
-            return None
-        try:
-            raw = json.loads(s)
-        except json.JSONDecodeError:
-            return {"response": raw, "use_rag": None}
-    if not isinstance(raw, dict):
-        return {"response": str(raw), "use_rag": None}
-
-    use_rag = raw.get("use_rag")
-
-    resp = raw.get("response")
-    if resp is not None:
-        text = resp if isinstance(resp, str) else str(resp)
-        if text.strip():
-            return {"response": text, "use_rag": use_rag}
-
-    choices = raw.get("choices")
-    if isinstance(choices, list) and choices:
-        msg = (choices[0] or {}).get("message") or {}
-        content = msg.get("content")
-        if isinstance(content, str) and content.strip():
-            return {"response": content, "use_rag": use_rag}
-
-    content = raw.get("content")
-    if isinstance(content, str) and content.strip():
-        return {"response": content, "use_rag": use_rag}
-
-    return None
 
 
 class LearningOrchestrator:
@@ -347,7 +174,7 @@ class LearningOrchestrator:
 
         print(f"Semantic cache RAW HIT for question: {question}, type={type(cached).__name__}")
 
-        normalized = _normalize_semantic_cache_hit(cached)
+        normalized = normalize_semantic_cache_hit(cached)
         if normalized is not None:
             return normalized
 
@@ -403,7 +230,7 @@ class LearningOrchestrator:
         if not ctx:
             return "No previous conversation."
         messages = (ctx.get("context") or {}).get("messages") or []
-        return _format_chat_history(messages)
+        return format_chat_history(messages)
 
     async def _append_to_chat_history(
         self,
@@ -454,100 +281,14 @@ class LearningOrchestrator:
         user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         langfuse_client = get_client()
-        if user_id and session_id:
-            chat_history_str = await self._get_chat_history_str(session_id, user_id)
+        chat_history_str = await self._get_chat_history_str(session_id, user_id)
 
         print(f"Chat history: {chat_history_str}")
 
         # 0. RAG decision: is this question about technical/course content (use RAG) or not?
         rag_decision_task = Task(
-            description="""You are a query router for an AI learning assistant.
-
-Your job is to decide if a user question requires retrieving
-information from course materials (RAG).
-Consider the chat history to make the decision.
-If the question is about these technical topics,
-the system should retrieve course material.
-
-Return JSON only.
-
-Output format:
-{"use_rag": true}
-or
-{"use_rag": false}
-
-Decision rules:
-
-Return {"use_rag": true} if the question:
-- asks about AI, ML, DL, NLP, or LLM concepts
-- asks about technical implementation of AI systems
-- asks about system architecture or system design
-- asks about DevOps, MLOps, or AI infrastructure
-- asks about programming or technical explanations related to these topics
-- asks about lecture content or course material
-
-Return {"use_rag": false} if the question:
-- is greeting or small talk
-- asks what the assistant can do
-- asks about the assistant itself
-- is unrelated to technology or AI
-- is general conversation
-
-Examples:
-
-User Question:
-"Explain what a large language model is"
-
-Output:
-{"use_rag": true}
-
-User Question:
-"What is the difference between CNN and RNN?"
-
-Output:
-{"use_rag": true}
-
-User Question:
-"What is Kubernetes used for?"
-
-Output:
-{"use_rag": true}
-
-User Question:
-"How does a RAG system work?"
-
-Output:
-{"use_rag": true}
-
-User Question:
-"How should we design an AI system architecture?"
-
-Output:
-{"use_rag": true}
-
-User Question:
-"What is the capital of France?"
-
-Output:
-{"use_rag": false}
-
-User Question:
-"How are you today?"
-
-Output:
-{"use_rag": false}
-
-Now classify the following question.
-
-Chat history (recent conversation with the user):
-{{chat_history}}
-
-User Question:
-"{{question}}"
-
-Output:
-""",
-            expected_output='A single JSON object: {"use_rag": true} or {"use_rag": false}.',
+            description=prompts.RAG_DECISION_TASK_DESCRIPTION,
+            expected_output=prompts.RAG_DECISION_EXPECTED_OUTPUT,
             agent=self.rag_decision_agent,
         )
         rag_decision_crew = Crew(agents=[self.rag_decision_agent], tasks=[rag_decision_task])
@@ -559,48 +300,14 @@ Output:
             rag_result = await rag_decision_crew.kickoff_async(
                 inputs={"question": question, "chat_history": chat_history_str}
             )
-            decision = _parse_rag_decision_result(rag_result.raw)
+            decision = parse_rag_decision_result(rag_result.raw)
             obs.update(output=decision)
 
         if not decision.get("use_rag", True):
             # No RAG: get a short, direct answer from the direct-answer agent; no groundedness check.
             direct_answer_task = Task(
-                description="""You are a helpful learning assistant created by Tony Bui. You can answer questions based on popular YouTube course lectures (e.g., Stanford CS336, CS229) and also handle technical questions beyond those courses.
-
-Answer the user question using general knowledge.
-
-Rules:
-
-- Keep answers short, clear, and easy to understand.
-- Only answer questions that are general conversation or about the assistant itself.
-- Do not attempt to answer questions about course material or lecture content.
-- Consider the chat history to answer the question.
-
-Examples:
-
-User Question:
-"Hello, how can you help me?"
-
-Answer:
-Hello! I'm Tony. I can help you with your learning journey by answering questions about the course materials. How can I help you today?
-
-User Question:
-"What is the capital of France?"
-
-Answer:
-The capital of France is Paris.
-
-Now answer the following question.
-
-Chat history (recent conversation with the user):
-{{chat_history}}
-
-User Question:
-"{{question}}"
-
-Answer:
-""",
-                expected_output="A short, clear, easy-to-understand answer in natural language.",
+                description=prompts.DIRECT_ANSWER_TASK_DESCRIPTION,
+                expected_output=prompts.DIRECT_ANSWER_EXPECTED_OUTPUT,
                 agent=self.direct_answer_agent,
             )
             direct_answer_crew = Crew(
@@ -623,14 +330,8 @@ Answer:
 
         # 1. Retrieval: answer from lecture materials
         retrieval_task = Task(
-            description="""Answer the following question using the retrieval tool. Use ONLY the retrieved lecture segments. Cite course name, lecture number, and video timestamps. If the retrieved content does not contain enough information, say 'I don't know'.
-You should use the chat history to resolve what the user is referring to and rewrite the RAG query accordingly before retrieving if the question is vague (e.g., "What is it?", "Explain this", "How does that work?").
-Chat history (recent conversation with the user):
-{{chat_history}}
-
-User question:
-{{question}}""",
-            expected_output="A clear answer grounded in the retrieved segments, with course/lecture and timestamp citations, or 'I don't know' if not answerable.",
+            description=prompts.RETRIEVAL_TASK_DESCRIPTION,
+            expected_output=prompts.RETRIEVAL_EXPECTED_OUTPUT,
             agent=self.retrieval_agent,
         )
         retrieval_crew = Crew(agents=[self.retrieval_agent], tasks=[retrieval_task])
@@ -650,26 +351,18 @@ User question:
         # 2. Get same context used by retrieval (for groundedness check)
         chunks_for_check = getattr(self.agents.retrieval_tool, "last_chunks", None)
         if isinstance(chunks_for_check, list) and chunks_for_check:
-            context_str = _format_retrieved_context(chunks_for_check)
+            context_str = format_retrieved_context(chunks_for_check)
         else:
             try:
                 chunks_for_check = self._retrieval_service.retrieve_vector(question)
-                context_str = _format_retrieved_context(chunks_for_check)
+                context_str = format_retrieved_context(chunks_for_check)
             except Exception:
                 context_str = "(Retrieval context unavailable)"
 
         # 3. Check groundedness: is the answer fully supported by the context?
         groundedness_task = Task(
-            description="""You are given:
-- User question: {{question}}
-- Answer to check: {{retrieval_answer}}
-- Retrieved context (raw segments): {{context}}
-
-1. Is the answer fully supported by the context?
-2. If not supported, return UNSUPPORTED (this includes "I don't know" and hallucination).
-
-Respond with exactly one JSON object: {"status": "SUPPORTED", "reason": "brief explanation"} or {"status": "UNSUPPORTED", "reason": "brief explanation"}.""",
-            expected_output="A single JSON object with keys status (SUPPORTED or UNSUPPORTED) and reason.",
+            description=prompts.GROUNDEDNESS_TASK_DESCRIPTION,
+            expected_output=prompts.GROUNDEDNESS_EXPECTED_OUTPUT,
             agent=self.check_groundedness_agent,
         )
         groundedness_crew = Crew(
@@ -694,7 +387,7 @@ Respond with exactly one JSON object: {"status": "SUPPORTED", "reason": "brief e
                 }
             )
             check_raw = check_result.raw
-            verdict = _parse_groundedness_result(check_raw)
+            verdict = parse_groundedness_result(check_raw)
             is_supported = (
                 verdict.get("status", "UNSUPPORTED").strip().upper() == "SUPPORTED"
             )
@@ -715,14 +408,8 @@ Respond with exactly one JSON object: {"status": "SUPPORTED", "reason": "brief e
             return {"response": retrieval_answer, "use_rag": True}
 
         search_task = Task(
-            description="""The lecture-based answer was unreliable. Answer the user's question using web search. Cite sources with URLs.
-If the question is vague (e.g., "What is it?", "Explain this", "How does that work?"), you MUST use the chat history to resolve what the user is referring to and rewrite the search query accordingly before searching.
-Chat history (recent conversation with the user):
-{{chat_history}}
-
-User question:
-{{question}}""",
-            expected_output="An answer based on search results with cited sources (title and URL). Say 'I don't know' if you cannot find enough information.",
+            description=prompts.SEARCH_TASK_DESCRIPTION,
+            expected_output=prompts.SEARCH_EXPECTED_OUTPUT,
             agent=self.search_agent,
         )
         search_crew = Crew(agents=[self.search_agent], tasks=[search_task])
@@ -869,37 +556,15 @@ User question:
 
             # 0) RAG decision — routing only, no streaming needed
             rag_decision_task = Task(
-                description="""You are a query router for an AI learning assistant.
-
-Your job is to decide if a user question requires retrieving
-information from course materials (RAG).
-Consider the chat history to make the decision.
-If the question is about these technical topics,
-the system should retrieve course material.
-
-Return JSON only.
-
-Output format:
-{"use_rag": true}
-or
-{"use_rag": false}
-
-Chat history (recent conversation with the user):
-{{chat_history}}
-
-User Question:
-"{{question}}"
-
-Output:
-""",
-                expected_output='A single JSON object: {"use_rag": true} or {"use_rag": false}.',
+                description=prompts.RAG_DECISION_TASK_DESCRIPTION,
+                expected_output=prompts.RAG_DECISION_EXPECTED_OUTPUT,
                 agent=self.rag_decision_agent,
             )
             rag_decision_crew = Crew(agents=[self.rag_decision_agent], tasks=[rag_decision_task])
             rag_result = await rag_decision_crew.kickoff_async(
                 inputs={"question": question, "chat_history": chat_history_str}
             )
-            decision = _parse_rag_decision_result(getattr(rag_result, "raw", "") or "")
+            decision = parse_rag_decision_result(getattr(rag_result, "raw", "") or "")
 
             final_response: str = ""
             use_rag: Optional[bool] = None
@@ -907,20 +572,8 @@ Output:
             if not decision.get("use_rag", True):
                 # ── Branch A: direct answer, no RAG ─────────────────────────────
                 direct_answer_task = Task(
-                    description="""Answer the user question using general knowledge.
-
-Keep answers short, clear, and easy to understand.
-Consider the chat history to answer the question.
-
-Chat history (recent conversation with the user):
-{{chat_history}}
-
-User Question:
-"{{question}}"
-
-Answer:
-""",
-                    expected_output="A short, clear, easy-to-understand answer in natural language.",
+                    description=prompts.DIRECT_ANSWER_STREAM_TASK_DESCRIPTION,
+                    expected_output=prompts.DIRECT_ANSWER_EXPECTED_OUTPUT,
                     agent=self.direct_answer_agent,
                 )
                 direct_answer_crew = Crew(
@@ -944,15 +597,8 @@ Answer:
             else:
                 # ── Branch B-1: retrieval answer (stream) ────────────────────────
                 retrieval_task = Task(
-                    description="""Answer the following question using the retrieval tool. Use ONLY the retrieved lecture segments. Cite course name, lecture number, and video timestamps. If the retrieved content does not contain enough information, say 'I don't know'.
-You should use the chat history to resolve what the user is referring to and rewrite the RAG query accordingly before retrieving if the question is vague.
-
-Chat history (recent conversation with the user):
-{{chat_history}}
-
-User question:
-{{question}}""",
-                    expected_output="A clear answer grounded in the retrieved segments, with course/lecture and timestamp citations, or 'I don't know' if not answerable.",
+                    description=prompts.RETRIEVAL_TASK_DESCRIPTION,
+                    expected_output=prompts.RETRIEVAL_EXPECTED_OUTPUT,
                     agent=self.retrieval_agent,
                 )
                 retrieval_crew = Crew(
@@ -976,24 +622,19 @@ User question:
                 # ── Branch B-2: groundedness check (non-stream, routing only) ────
                 chunks_for_check = getattr(self.agents.retrieval_tool, "last_chunks", None)
                 if isinstance(chunks_for_check, list) and chunks_for_check:
-                    context_str = _format_retrieved_context(chunks_for_check)
+                    context_str = format_retrieved_context(chunks_for_check)
                 else:
                     # Fallback: only if tool state unavailable.
                     try:
                         chunks_for_check = self._retrieval_service.retrieve_vector(question)
-                        context_str = _format_retrieved_context(chunks_for_check)
+                        context_str = format_retrieved_context(chunks_for_check)
                     except Exception:
                         chunks_for_check = []
                         context_str = "(Retrieval context unavailable)"
 
                 groundedness_task = Task(
-                    description="""You are given:
-- User question: {{question}}
-- Answer to check: {{retrieval_answer}}
-- Retrieved context (raw segments): {{context}}
-
-Respond with exactly one JSON object: {"status": "SUPPORTED", "reason": "brief explanation"} or {"status": "UNSUPPORTED", "reason": "brief explanation"}.""",
-                    expected_output="A single JSON object with keys status (SUPPORTED or UNSUPPORTED) and reason.",
+                    description=prompts.GROUNDEDNESS_STREAM_TASK_DESCRIPTION,
+                    expected_output=prompts.GROUNDEDNESS_STREAM_EXPECTED_OUTPUT,
                     agent=self.check_groundedness_agent,
                 )
                 groundedness_crew = Crew(
@@ -1009,7 +650,7 @@ Respond with exactly one JSON object: {"status": "SUPPORTED", "reason": "brief e
                             "context": context_str,
                         }
                     )
-                    verdict = _parse_groundedness_result(getattr(check_result, "raw", "") or "")
+                    verdict = parse_groundedness_result(getattr(check_result, "raw", "") or "")
                     is_supported = (
                         verdict.get("status", "UNSUPPORTED").strip().upper() == "SUPPORTED"
                     )
@@ -1032,15 +673,8 @@ Respond with exactly one JSON object: {"status": "SUPPORTED", "reason": "brief e
                     }
                     # ── Branch B-3: web search fallback (stream) ─────────────────
                     search_task = Task(
-                        description="""The lecture-based answer was unreliable. Answer the user's question using web search. Cite sources with URLs.
-If the question is vague, you MUST use the chat history to resolve what the user is referring to and rewrite the search query accordingly before searching.
-
-Chat history (recent conversation with the user):
-{{chat_history}}
-
-User question:
-{{question}}""",
-                        expected_output="An answer based on search results with cited sources (title and URL). Say 'I don't know' if you cannot find enough information.",
+                        description=prompts.SEARCH_STREAM_TASK_DESCRIPTION,
+                        expected_output=prompts.SEARCH_STREAM_EXPECTED_OUTPUT,
                         agent=self.search_agent,
                     )
                     search_crew = Crew(

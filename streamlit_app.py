@@ -13,8 +13,24 @@ st.set_page_config(
 
 
 def _default_api_base_url() -> str:
-    # FastAPI defaults from src/settings.py: PORT=8055, API_V1_STR="/v1"
-    return os.getenv("AIDE_API_BASE_URL", "http://localhost:8055/v1").rstrip("/")
+    """
+    Resolve the FastAPI base URL for Streamlit.
+
+    Priority:
+    1) Explicit override: AIDE_API_BASE_URL
+    2) Railway-provided public domain (if present): https://$RAILWAY_PUBLIC_DOMAIN/v1
+    3) Local dev default: http://localhost:8055/v1
+    """
+    explicit = (os.getenv("AIDE_API_BASE_URL") or "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+
+    # Railway commonly provides this in the runtime environment.
+    railway_domain = (os.getenv("RAILWAY_PUBLIC_DOMAIN") or "").strip()
+    if railway_domain:
+        return f"https://{railway_domain}/v1".rstrip("/")
+
+    return "http://localhost:8055/v1"
 
 
 def _get_api_base_url() -> str:

@@ -39,16 +39,16 @@ class LongTermMemoryService:
     """Service for managing long-term memory using PostgreSQL."""
 
     def __init__(self):
-        # Create async database URL
-        password = SETTINGS.POSTGRES_PASSWORD.get_secret_value()
-        self.database_url = (
-            f"postgresql+asyncpg://{SETTINGS.POSTGRES_USER}:{password}@"
-            f"{SETTINGS.POSTGRES_HOST}:{SETTINGS.POSTGRES_PORT}/{SETTINGS.POSTGRES_DB}"
-        )
-        # self.database_url = (
-        #     f"postgresql://{SETTINGS.POSTGRES_USER}:{password}@"
-        #     f"{SETTINGS.POSTGRES_HOST}:{SETTINGS.POSTGRES_PORT}/{SETTINGS.POSTGRES_DB}"
-        # )
+        # Use DATABASE_URL if provided, otherwise construct it
+        if SETTINGS.DATABASE_URL:
+            self.database_url = SETTINGS.DATABASE_URL
+        else:
+            password = SETTINGS.POSTGRES_PASSWORD.get_secret_value()
+            self.database_url = (
+                f"postgresql+asyncpg://{SETTINGS.POSTGRES_USER}:{password}@"
+                f"{SETTINGS.POSTGRES_HOST}:{SETTINGS.POSTGRES_PORT}/{SETTINGS.POSTGRES_DB}"
+            )
+        
         print(f"Database URL: {self.database_url}")  # Debugging line
         # Create async engine and session
         self.engine = create_async_engine(self.database_url)

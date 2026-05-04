@@ -1,0 +1,25 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+dist
+build
+
+# Large / not needed for API runtime
+reports
+infra
+ingest_data
+pages
+Main_Page.py
+streamlit_utils.py
+test
+.cursor
+*.md
+
+.env
+.env.*

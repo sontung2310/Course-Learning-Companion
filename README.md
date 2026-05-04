@@ -37,7 +37,7 @@ The main motivations of this project are:
 
 ## System architecture
 
-![System architecture](images/architecture.png)
+![System architecture](images/architecture_update.png)
 
 This system is not just a **standalone agent**; it is designed as a **production AI platform** with a layered architecture to ensure stability, efficiency, and reliability. 
 
