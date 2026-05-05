@@ -359,7 +359,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         done = doneReading;
                         if (value) {
                             buffer += decoder.decode(value, { stream: true });
-                            let lines = buffer.split('\\n');
+                            let lines = buffer.split('\n');
                             buffer = lines.pop(); // keep the last incomplete line
                             
                             for (let line of lines) {
@@ -387,7 +387,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                             contentDiv.textContent = '';
                                             metaDiv.textContent = 'Retrieval answer replaced after groundedness check';
                                         } else if (event.type === 'error') {
-                                            contentDiv.textContent += '\\n[Error: ' + event.message + ']';
+                                            contentDiv.textContent += '\n[Error: ' + event.message + ']';
                                         }
                                     } catch (e) {}
                                 }
