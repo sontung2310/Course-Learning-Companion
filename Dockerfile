@@ -30,6 +30,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project
 
 COPY src/ ./src/
+COPY streamlit_utils.py ./
 
 ENV PYTHONPATH=/app
 ENV PATH="/app/.venv/bin:$PATH"
