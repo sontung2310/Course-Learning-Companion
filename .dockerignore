@@ -16,7 +16,6 @@ infra
 ingest_data
 pages
 Main_Page.py
-streamlit_utils.py
 test
 .cursor
 *.md

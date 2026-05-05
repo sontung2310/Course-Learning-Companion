@@ -59,7 +59,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(**APP_CONFIGS, lifespan=lifespan)
 
-
 @app.get("/health", include_in_schema=False)
 async def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
@@ -74,4 +73,10 @@ app.include_router(
     api_router,
     prefix=SETTINGS.API_V1_STR,
 )
+
+import os
+from fastapi.staticfiles import StaticFiles
+
+if os.path.exists("reports"):
+    app.mount("/reports", StaticFiles(directory="reports"), name="reports")
 

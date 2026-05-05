@@ -11,6 +11,17 @@
 #     or add db/redis/milvus services to this file and use service names.
 
 services:
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: course-learning-frontend
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+    networks:
+      - infra_network
+
   api:
     build:
       context: .
