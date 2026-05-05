@@ -374,10 +374,12 @@ document.addEventListener('DOMContentLoaded', () => {
                                             contentDiv.textContent += event.content;
                                             scrollToBottom();
                                         } else if (event.type === 'final') {
-                                            if (event.from_cache && event.response) {
+                                            if (event.response) {
                                                 contentDiv.textContent = event.response;
+                                            }
+                                            if (event.from_cache) {
                                                 metaDiv.textContent = 'Served from cache';
-                                            } else if (event.use_rag) {
+                                            } else if (event.use_rag !== undefined) {
                                                 metaDiv.textContent = `use_rag: ${event.use_rag}`;
                                             }
                                             scrollToBottom();

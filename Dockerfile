@@ -31,6 +31,7 @@ RUN uv sync --frozen --no-install-project
 
 COPY src/ ./src/
 COPY streamlit_utils.py ./
+COPY reports/ ./reports/
 
 ENV PYTHONPATH=/app
 ENV PATH="/app/.venv/bin:$PATH"
