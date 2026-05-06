@@ -15,9 +15,12 @@ import shutil
 import subprocess
 import re
 import tempfile
+import time
+import random
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI
 
 YOUTUBE_URL_PREFIX = "https://www.youtube.com/watch?v="
@@ -229,6 +232,78 @@ Make the content engaging and easy to read while preserving all the important in
             'refined_title': title,
             'refined_content': f'<p>{formatted_summary}</p>'
         }
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        v = int((os.getenv(name) or "").strip())
+        return v if v > 0 else default
+    except Exception:
+        return default
+
+
+def _process_single_segment(
+    *,
+    segment_index: int,
+    total_segments: int,
+    segment: Dict,
+    api_key: str,
+    full_video_path: str,
+    frames_dir: str,
+) -> Dict:
+    """
+    Process one segment: refine with OpenAI + extract midpoint frame.
+    Returns a dict compatible with downstream HTML + chunking writers.
+    """
+    title = segment.get("title", f"Segment {segment_index}")
+    start_ts = segment.get("start_timestamp", "00:00")
+    end_ts = segment.get("end_timestamp")
+    summary = segment.get("summary", "")
+
+    # Output will interleave in parallel mode; keep logs short.
+    print(f"[{segment_index}/{total_segments}] Processing: {title}")
+
+    start_seconds = safe_timestamp_to_seconds(start_ts, 0.0)
+    end_seconds = safe_timestamp_to_seconds(end_ts, start_seconds)
+    if end_seconds < start_seconds:
+        end_seconds = start_seconds
+
+    midpoint_seconds = (end_seconds - start_seconds) / 2 + start_seconds
+    midpoint_ts = seconds_to_timestamp(midpoint_seconds)
+
+    # Create a client per worker to avoid any thread-safety uncertainty.
+    client = OpenAI(api_key=api_key)
+
+    refined: Optional[Dict[str, str]] = None
+    for attempt in range(1, 4):
+        try:
+            refined = refine_content_with_openai(title, summary, client)
+            break
+        except Exception as e:
+            if attempt == 3:
+                print(f"  Warning: refine failed after retries: {e}")
+                refined = {"refined_title": title, "refined_content": f"<p>{summary}</p>"}
+            else:
+                time.sleep((0.75 * attempt) + random.random() * 0.25)
+
+    print(f"  Extracting frame at midpoint {midpoint_ts}...")
+    safe_title = sanitize_filename(title)
+    frame_name = f"segment_{segment_index:02d}_{safe_title}"
+    frame_path = extract_frame_at_timestamp(full_video_path, midpoint_seconds, frames_dir, frame_name)
+
+    frame_paths = [frame_path] if frame_path else []
+    if not frame_path:
+        print("  Warning: No frame extracted")
+
+    return {
+        "title": title,
+        "start_timestamp": start_ts,
+        "end_timestamp": end_ts if end_ts else start_ts,
+        "refined_title": (refined or {}).get("refined_title", title),
+        "refined_content": (refined or {}).get("refined_content", f"<p>{summary}</p>"),
+        "frame_paths": frame_paths,
+        "_segment_index": segment_index,  # internal: restore stable ordering
+    }
 
 
 def html_to_plain_text(html: str) -> str:
@@ -468,8 +543,6 @@ def process_video_segments(video_id: str, output_base: str = "reports",
         print("Error: OpenAI API key not found. Set OPENAI_API_KEY environment variable or pass --openai-api-key")
         return
 
-    client = OpenAI(api_key=api_key)
-
     # Create output directories (no videos dir; we do not save the video)
     os.makedirs(output_dir, exist_ok=True)
     frames_dir = os.path.join(output_dir, "frames")
@@ -510,46 +583,49 @@ def process_video_segments(video_id: str, output_base: str = "reports",
 
         print(f"Processing {len(segments)} segments...\n")
 
-        processed_segments = []
+        processed_segments: List[Dict] = []
 
-        for i, segment in enumerate(segments, 1):
-            title = segment.get('title', f'Segment {i}')
-            start_ts = segment.get('start_timestamp', '00:00')
-            end_ts = segment.get('end_timestamp')
-            summary = segment.get('summary', '')
+        workers = _env_int("REFINE_REPORT_WORKERS", default=4)
+        workers = min(workers, max(1, len(segments)))
+        if len(segments) <= 1 or workers <= 1:
+            for i, segment in enumerate(segments, 1):
+                processed_segments.append(
+                    _process_single_segment(
+                        segment_index=i,
+                        total_segments=len(segments),
+                        segment=segment,
+                        api_key=api_key,
+                        full_video_path=full_video_path,
+                        frames_dir=frames_dir,
+                    )
+                )
+        else:
+            print(f"Parallel mode enabled: {workers} workers (set REFINE_REPORT_WORKERS=1 to disable)\n")
+            futures = []
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                for i, segment in enumerate(segments, 1):
+                    futures.append(
+                        executor.submit(
+                            _process_single_segment,
+                            segment_index=i,
+                            total_segments=len(segments),
+                            segment=segment,
+                            api_key=api_key,
+                            full_video_path=full_video_path,
+                            frames_dir=frames_dir,
+                        )
+                    )
 
-            print(f"[{i}/{len(segments)}] Processing: {title}")
-            print(f"  Time: {start_ts} - {end_ts}")
+                results: List[Dict] = []
+                for fut in as_completed(futures):
+                    results.append(fut.result())
 
-            start_seconds = safe_timestamp_to_seconds(start_ts, 0.0)
-            end_seconds = safe_timestamp_to_seconds(end_ts, start_seconds)
-            if end_seconds < start_seconds:
-                end_seconds = start_seconds
+            results.sort(key=lambda d: d.get("_segment_index", 0))
+            processed_segments.extend(results)
 
-            midpoint_seconds = (end_seconds - start_seconds) / 2 + start_seconds
-            midpoint_ts = seconds_to_timestamp(midpoint_seconds)
-
-            print("  Refining content with OpenAI...")
-            refined = refine_content_with_openai(title, summary, client)
-
-            print(f"  Extracting frame at midpoint {midpoint_ts}...")
-            safe_title = sanitize_filename(title)
-            frame_name = f"segment_{i:02d}_{safe_title}"
-            frame_path = extract_frame_at_timestamp(full_video_path, midpoint_seconds, frames_dir, frame_name)
-
-            frame_paths = [frame_path] if frame_path else []
-            if not frame_path:
-                print("  Warning: No frame extracted")
-
-            processed_segments.append({
-                'title': title,
-                'start_timestamp': start_ts,
-                'end_timestamp': end_ts if end_ts else start_ts,
-                'refined_title': refined['refined_title'],
-                'refined_content': refined['refined_content'],
-                'frame_paths': frame_paths
-            })
-            print()
+        for seg in processed_segments:
+            if isinstance(seg, dict) and "_segment_index" in seg:
+                seg.pop("_segment_index", None)
 
         # Generate HTML lecture summary (for human reading / lecture summary)
         html_path = os.path.join(output_dir, f"{video_id}_lecture_summary.html")
@@ -594,9 +670,17 @@ def main():
         action='store_true',
         help='Skip video download (video is still not saved; used only when reusing a run)'
     )
+    parser.add_argument(
+        '--workers',
+        type=int,
+        default=0,
+        help='Worker threads for per-segment processing. If 0, use REFINE_REPORT_WORKERS env var (default 4). Use 1 to disable parallelism.',
+    )
 
 
     args = parser.parse_args()
+    if args.workers and args.workers > 0:
+        os.environ["REFINE_REPORT_WORKERS"] = str(args.workers)
 
     process_video_segments(
         args.video_id,

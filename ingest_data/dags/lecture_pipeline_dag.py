@@ -48,10 +48,11 @@ PIPELINE_OUTPUT_BASE = os.environ.get(
 )
 
 DEFAULT_VIDEO_ID = "ptFiH_bHnJw"
+DEFAULT_REFINE_WORKERS = int(os.environ.get("REFINE_REPORT_WORKERS", "4") or "4")
 
 
 def _get_conf(**context):
-    """Return (video_id, course_name, number_lecture) from DAG run config or Airflow Variables."""
+    """Return (video_id, course_name, number_lecture, refine_workers) from config/Variables."""
     dag_run = context.get("dag_run")
     conf = (getattr(dag_run, "conf", None) or {}) if dag_run else {}
     video_id = conf.get("video_id") or Variable.get(
@@ -63,7 +64,18 @@ def _get_conf(**context):
     number_lecture = conf.get("number_lecture") or Variable.get(
         "lecture_pipeline_number_lecture", default_var=""
     )
-    return video_id, course_name, number_lecture
+    refine_workers = conf.get("refine_workers")
+    if refine_workers is None or str(refine_workers).strip() == "":
+        refine_workers = Variable.get(
+            "lecture_pipeline_refine_workers", default_var=str(DEFAULT_REFINE_WORKERS)
+        )
+    try:
+        refine_workers_int = int(str(refine_workers).strip())
+    except Exception:
+        refine_workers_int = DEFAULT_REFINE_WORKERS
+    if refine_workers_int < 1:
+        refine_workers_int = 1
+    return video_id, course_name, number_lecture, refine_workers_int
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +93,7 @@ def task_fetch_transcript(**context):
         --course_name "Stanford CS336 Language Modeling from Scratch"
         --number_lecture "Lecture 5: GPUs"
     """
-    video_id, course_name, number_lecture = _get_conf(**context)
+    video_id, course_name, number_lecture, _refine_workers = _get_conf(**context)
     import transcript_API  # noqa: PLC0415
 
     out_path = transcript_API.run_pipeline(
@@ -107,13 +119,20 @@ def task_refine_report(**context):
     Equivalent CLI:
       python refine_report.py --video_id "6OBtO9niT00"
     """
+    video_id_conf, _course_name, _number_lecture, refine_workers = _get_conf(**context)
     ti = context["ti"]
     video_id = ti.xcom_pull(task_ids="fetch_transcript", key="video_id")
     transcript_path = ti.xcom_pull(task_ids="fetch_transcript", key="transcript_summary_path")
     if not transcript_path or not os.path.isfile(transcript_path):
         raise FileNotFoundError(f"Transcript summary not found: {transcript_path}")
+    # Prefer XCom video_id if present; otherwise fall back to conf.
+    if not video_id:
+        video_id = video_id_conf
 
     import refine_report  # noqa: PLC0415
+
+    # Enable threaded segment processing in refine_report.py
+    os.environ["REFINE_REPORT_WORKERS"] = str(refine_workers)
 
     refine_report.process_video_segments(
         video_id=video_id,
@@ -170,6 +189,7 @@ with DAG(
         "video_id": DEFAULT_VIDEO_ID,
         "course_name": "",
         "number_lecture": "",
+        "refine_workers": DEFAULT_REFINE_WORKERS,
     },
 ) as dag:
 
