@@ -251,6 +251,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const sendButton = document.getElementById('send-button');
     const streamToggle = document.getElementById('stream-toggle');
     const streamLabel = document.getElementById('stream-label');
+    const recentSessionsList = document.getElementById('recent-sessions-list');
+    const newSessionBtn = document.getElementById('new-session-btn');
+    const clearSessionsBtn = document.getElementById('clear-sessions-btn');
 
     if (chatMessages && chatInput && sendButton) {
         
@@ -296,6 +299,93 @@ document.addEventListener('DOMContentLoaded', () => {
             chatMessages.appendChild(div);
             scrollToBottom();
             return div;
+        };
+
+        const clearChatUI = () => {
+            chatMessages.innerHTML = '';
+        };
+
+        const renderAssistantMessage = (text) => {
+            const botContainer = createBotMessageContainer();
+            const contentDiv = botContainer.querySelector('.ai-content');
+            if (contentDiv) contentDiv.textContent = text || '';
+        };
+
+        const loadSessionMessages = async (sessionId) => {
+            if (!sessionId) return;
+            clearChatUI();
+            try {
+                const res = await fetch(`${API_BASE}/users/chat-sessions/${currentUser.user_id}/${encodeURIComponent(sessionId)}`);
+                if (!res.ok) throw new Error('Failed to load session');
+                const data = await res.json();
+                const messages = (data && data.messages) ? data.messages : [];
+                if (!Array.isArray(messages) || messages.length === 0) {
+                    const empty = document.createElement('div');
+                    empty.className = 'text-xs text-slate-500';
+                    empty.textContent = 'No stored messages for this session (it may have expired).';
+                    chatMessages.appendChild(empty);
+                    return;
+                }
+                for (const msg of messages) {
+                    if (!msg || typeof msg !== 'object') continue;
+                    if (msg.role === 'user') renderUserMessage(msg.content || '');
+                    else if (msg.role === 'assistant') renderAssistantMessage(msg.content || '');
+                }
+            } catch (err) {
+                const div = document.createElement('div');
+                div.className = 'text-xs text-error';
+                div.textContent = `Error loading session: ${err.message}`;
+                chatMessages.appendChild(div);
+            }
+        };
+
+        const renderRecentSessions = (sessionIds) => {
+            if (!recentSessionsList) return;
+            recentSessionsList.innerHTML = '';
+
+            if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'text-xs text-slate-500';
+                empty.textContent = 'No recent sessions yet. Start chatting to create one.';
+                recentSessionsList.appendChild(empty);
+                return;
+            }
+
+            const currentSessionId = localStorage.getItem('chatSessionId');
+
+            sessionIds.forEach((sessionId) => {
+                const card = document.createElement('div');
+                const isActive = currentSessionId && sessionId === currentSessionId;
+                card.className = `p-4 rounded-xl bg-white border border-slate-100 shadow-sm hover:shadow-md transition-all cursor-pointer group ${isActive ? 'ring-2 ring-primary-container/60' : ''}`;
+                card.innerHTML = `
+                    <div class="flex justify-between items-start mb-2">
+                        <span class="px-2 py-0.5 rounded-full bg-primary-container/20 text-on-primary-container text-[10px] font-bold uppercase tracking-wider">Session</span>
+                        <span class="text-[10px] text-slate-400">${isActive ? 'Active' : ''}</span>
+                    </div>
+                    <h3 class="text-sm font-semibold text-slate-700 group-hover:text-primary transition-colors">Chat ${sessionId}</h3>
+                    <p class="text-xs text-slate-500 mt-1 line-clamp-1">Click to load messages</p>
+                `;
+                card.addEventListener('click', async () => {
+                    localStorage.setItem('chatSessionId', sessionId);
+                    renderRecentSessions(sessionIds);
+                    await loadSessionMessages(sessionId);
+                });
+                recentSessionsList.appendChild(card);
+            });
+        };
+
+        const loadRecentSessions = async () => {
+            if (!recentSessionsList) return;
+            recentSessionsList.innerHTML = '<div class="text-xs text-slate-500">Loading sessions...</div>';
+            try {
+                const res = await fetch(`${API_BASE}/users/chat-sessions/${currentUser.user_id}`);
+                if (!res.ok) throw new Error('Failed to load sessions');
+                const sessionIds = await res.json();
+                // Show newest-ish first (Redis KEYS ordering is arbitrary; reverse is still nicer UX)
+                renderRecentSessions(Array.isArray(sessionIds) ? [...sessionIds].reverse() : sessionIds);
+            } catch (err) {
+                recentSessionsList.innerHTML = `<div class="text-xs text-error">Error loading sessions: ${err.message}</div>`;
+            }
         };
 
         const handleSend = async () => {
@@ -397,6 +487,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             } catch (err) {
                 contentDiv.textContent = `Error: ${err.message}`;
+            } finally {
+                // After sending, refresh session list so "Recent Sessions" stays up to date.
+                loadRecentSessions();
             }
         };
 
@@ -407,5 +500,35 @@ document.addEventListener('DOMContentLoaded', () => {
                 handleSend();
             }
         });
+
+        if (newSessionBtn) {
+            newSessionBtn.addEventListener('click', () => {
+                const sessionId = 'sesh-' + Math.random().toString(36).substr(2, 9);
+                localStorage.setItem('chatSessionId', sessionId);
+                clearChatUI();
+                loadRecentSessions();
+            });
+        }
+
+        if (clearSessionsBtn) {
+            clearSessionsBtn.addEventListener('click', async () => {
+                const ok = confirm('Clear all your chat sessions? This removes stored short-term memory in Redis.');
+                if (!ok) return;
+                try {
+                    const res = await fetch(`${API_BASE}/users/clear-session/${currentUser.user_id}`, { method: 'DELETE' });
+                    if (!res.ok) throw new Error('Failed to clear sessions');
+                    localStorage.removeItem('chatSessionId');
+                    clearChatUI();
+                    await loadRecentSessions();
+                } catch (err) {
+                    alert(`Error clearing sessions: ${err.message}`);
+                }
+            });
+        }
+
+        // Initial load of Recent Sessions (and auto-load current session messages if present)
+        loadRecentSessions();
+        const initialSessionId = localStorage.getItem('chatSessionId');
+        if (initialSessionId) loadSessionMessages(initialSessionId);
     }
 });
