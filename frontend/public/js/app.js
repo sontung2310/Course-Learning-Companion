@@ -468,11 +468,14 @@ document.addEventListener('DOMContentLoaded', () => {
                             buffer = lines.pop(); // keep the last incomplete line
                             
                             for (let line of lines) {
-                                if (line.startsWith('data: ')) {
-                                    const dataStr = line.substring(6);
+                                // Handle CRLF (`\r\n`) and tolerate `data:` with/without a space.
+                                line = line.replace(/\r$/, '');
+                                if (line.startsWith('data:')) {
+                                    const dataStr = line.substring(5).trimStart().trimEnd();
                                     if (dataStr === '[DONE]') {
                                         break;
                                     }
+                                    if (!dataStr) continue;
                                     try {
                                         const event = JSON.parse(dataStr);
                                         if (event.type === 'token' && event.content) {
