@@ -41,8 +41,8 @@ async def ask_question(
 async def _sse_generator(event_stream: AsyncIterator[Dict[str, Any]]) -> AsyncIterator[str]:
     """Convert agent events to Server-Sent Events (text/event-stream) format."""
     try:
-        async for event in event_stream:
-            yield f"data: {json.dumps(event)}\n\n"
+      async for event in event_stream:
+          yield f"data: {json.dumps(event)}\n\n"
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
     finally:
@@ -93,6 +93,7 @@ async def ask_question_stream(
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
             "X-Accel-Buffering": "no",  # Disable nginx proxy buffering
         },
     )

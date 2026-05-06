@@ -443,6 +443,21 @@ document.addEventListener('DOMContentLoaded', () => {
                     const decoder = new TextDecoder('utf-8');
                     let done = false;
                     let buffer = '';
+                    // Smooth UI updates: batch token appends per animation frame
+                    let pendingText = '';
+                    let flushScheduled = false;
+                    const flushPending = () => {
+                        flushScheduled = false;
+                        if (!pendingText) return;
+                        contentDiv.textContent += pendingText;
+                        pendingText = '';
+                        scrollToBottom();
+                    };
+                    const scheduleFlush = () => {
+                        if (flushScheduled) return;
+                        flushScheduled = true;
+                        requestAnimationFrame(flushPending);
+                    };
 
                     while (!done) {
                         const { value, done: doneReading } = await reader.read();
@@ -461,11 +476,16 @@ document.addEventListener('DOMContentLoaded', () => {
                                     try {
                                         const event = JSON.parse(dataStr);
                                         if (event.type === 'token' && event.content) {
-                                            contentDiv.textContent += event.content;
-                                            scrollToBottom();
+                                            pendingText += event.content;
+                                            scheduleFlush();
                                         } else if (event.type === 'final') {
+                                            // Ensure any pending text is flushed before finalizing
+                                            flushPending();
                                             if (event.response) {
-                                                contentDiv.textContent = event.response;
+                                                // Don't fight the streamed buffer; only set if empty or clearly missing.
+                                                if (!contentDiv.textContent || contentDiv.textContent.length < (event.response || '').length) {
+                                                    contentDiv.textContent = event.response;
+                                                }
                                             }
                                             if (event.from_cache) {
                                                 metaDiv.textContent = 'Served from cache';
@@ -476,6 +496,10 @@ document.addEventListener('DOMContentLoaded', () => {
                                         } else if (event.type === 'rollback') {
                                             contentDiv.textContent = '';
                                             metaDiv.textContent = 'Retrieval answer replaced after groundedness check';
+                                            pendingText = '';
+                                            flushScheduled = false;
+                                        } else if (event.type === 'ping') {
+                                            // Keep-alive / proxy-flush event; ignore in UI.
                                         } else if (event.type === 'error') {
                                             contentDiv.textContent += '\n[Error: ' + event.message + ']';
                                         }
@@ -484,6 +508,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             }
                         }
                     }
+                    // Final flush in case stream ends mid-frame
+                    flushPending();
                 }
             } catch (err) {
                 contentDiv.textContent = `Error: ${err.message}`;
