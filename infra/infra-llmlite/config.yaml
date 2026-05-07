@@ -4,7 +4,7 @@ model_list:
       model: openai/gpt-4.1-mini
       api_key: os.environ/OPENAI_API_KEY_4_1_MINI
       rpm: 6 # [OPTIONAL] Rate limit for this deployment: in requests per minute (rpm)
-      max_budget: 0.1 # (USD)
+      max_budget: 1 # (USD)
       budget_duration: 1d # (Duration. can be 1s, 1m, 1h, 1d, 1mo)
       weight: 2
   - model_name: gpt-api
@@ -12,7 +12,7 @@ model_list:
       model: openai/gpt-4.1-mini
       api_key: os.environ/OPENAI_API_KEY_4O
       rpm: 6 # [OPTIONAL] Rate limit for this deployment: in requests per minute (rpm)
-      max_budget: 0.1 # (USD)
+      max_budget: 1 # (USD)
       budget_duration: 1d # (Duration. can be 1s, 1m, 1h, 1d, 1mo)
       weight: 1
   - model_name: vllm-qwen
