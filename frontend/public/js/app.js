@@ -438,6 +438,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     if (!res.ok) throw new Error('API Error');
 
+                    // Drop "Thinking..." before any streamed tokens. If we skipped this, the first
+                    // `textContent += chunk` would read "Thinking..." and prepend it to every chunk.
                     contentDiv.textContent = '';
                     const reader = res.body.getReader();
                     const decoder = new TextDecoder('utf-8');
@@ -446,9 +448,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     // Smooth UI updates: batch token appends per animation frame
                     let pendingText = '';
                     let flushScheduled = false;
+                    let streamContentStarted = false;
                     const flushPending = () => {
                         flushScheduled = false;
                         if (!pendingText) return;
+                        if (!streamContentStarted) {
+                            streamContentStarted = true;
+                            contentDiv.textContent = '';
+                        }
                         contentDiv.textContent += pendingText;
                         pendingText = '';
                         scrollToBottom();
