@@ -256,7 +256,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const clearSessionsBtn = document.getElementById('clear-sessions-btn');
 
     if (chatMessages && chatInput && sendButton) {
-        
+        /** Set false to silence chat streaming diagnostics. */
+        const DEBUG_CHAT_STREAM = true;
+
         if (streamToggle && streamLabel) {
             streamToggle.addEventListener('change', (e) => {
                 streamLabel.innerText = e.target.checked ? 'STREAMING' : 'NON-STREAMING';
@@ -405,6 +407,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const isStreaming = streamToggle ? streamToggle.checked : true;
             const endpoint = isStreaming ? `${API_BASE}/agents/personalized-learning/stream` : `${API_BASE}/agents/personalized-learning`;
 
+            if (DEBUG_CHAT_STREAM) {
+                console.log('[chat stream] send', { isStreaming, endpoint, sessionId });
+            }
+
             const payload = {
                 user_input: text,
                 session_id: sessionId,
@@ -415,7 +421,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const contentDiv = botContainer.querySelector('.ai-content');
             const metaDiv = botContainer.querySelector('.ai-meta');
             
-            contentDiv.innerHTML = '<span class="animate-pulse">Thinking...</span>';
+            // "Thinking" placeholder. Clear it explicitly on first token.
+            contentDiv.dataset.state = 'thinking';
+            contentDiv.innerHTML = '<span class="animate-pulse" data-thinking="1">Thinking...</span>';
+
+            const clearThinking = () => {
+                if (contentDiv.dataset.state === 'thinking') {
+                    contentDiv.dataset.state = 'ready';
+                    contentDiv.textContent = '';
+                }
+            };
 
             try {
                 if (!isStreaming) {
@@ -426,6 +441,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                     if (!res.ok) throw new Error('API Error');
                     const data = await res.json();
+                    clearThinking();
                     contentDiv.textContent = data.response || '(No response)';
                     if (data.use_rag) metaDiv.textContent = `use_rag: ${data.use_rag}`;
                     scrollToBottom();
@@ -438,38 +454,60 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     if (!res.ok) throw new Error('API Error');
 
-                    // Drop "Thinking..." before any streamed tokens. If we skipped this, the first
-                    // `textContent += chunk` would read "Thinking..." and prepend it to every chunk.
-                    contentDiv.textContent = '';
+                    if (DEBUG_CHAT_STREAM) {
+                        console.log('[chat stream] response headers', {
+                            status: res.status,
+                            ok: res.ok,
+                            contentType: res.headers.get('content-type'),
+                        });
+                    }
+
+                    clearThinking();
                     const reader = res.body.getReader();
                     const decoder = new TextDecoder('utf-8');
                     let done = false;
                     let buffer = '';
-                    // Smooth UI updates: batch token appends per animation frame
+                    let readCount = 0;
+                    let bytesIn = 0;
+                    let tokenEventCount = 0;
+                    let otherEventCounts = {};
+                    let firstTokenLogged = false;
+                    let firstTokenSeen = false;
+                    // Buffer token text, then flush. rAF alone is not enough: parsing many SSE lines in one
+                    // synchronous loop schedules one rAF that does not run until we yield — so we await a frame
+                    // every N tokens and flush after each network chunk.
                     let pendingText = '';
-                    let flushScheduled = false;
-                    let streamContentStarted = false;
+                    let flushCount = 0;
+                    const TOKEN_FLUSH_EVERY = 6;
                     const flushPending = () => {
-                        flushScheduled = false;
                         if (!pendingText) return;
-                        if (!streamContentStarted) {
-                            streamContentStarted = true;
-                            contentDiv.textContent = '';
-                        }
+                        const len = pendingText.length;
                         contentDiv.textContent += pendingText;
                         pendingText = '';
                         scrollToBottom();
-                    };
-                    const scheduleFlush = () => {
-                        if (flushScheduled) return;
-                        flushScheduled = true;
-                        requestAnimationFrame(flushPending);
+                        flushCount += 1;
+                        if (DEBUG_CHAT_STREAM && (flushCount <= 3 || flushCount % 20 === 0)) {
+                            console.log('[chat stream] flushPending', {
+                                flushCount,
+                                appendedChars: len,
+                                bubbleLength: contentDiv.textContent.length,
+                            });
+                        }
                     };
 
                     while (!done) {
                         const { value, done: doneReading } = await reader.read();
                         done = doneReading;
                         if (value) {
+                            readCount += 1;
+                            bytesIn += value.byteLength;
+                            if (DEBUG_CHAT_STREAM && readCount <= 3) {
+                                console.log('[chat stream] read chunk', {
+                                    readCount,
+                                    byteLength: value.byteLength,
+                                    totalBytes: bytesIn,
+                                });
+                            }
                             buffer += decoder.decode(value, { stream: true });
                             let lines = buffer.split('\n');
                             buffer = lines.pop(); // keep the last incomplete line
@@ -480,15 +518,50 @@ document.addEventListener('DOMContentLoaded', () => {
                                 if (line.startsWith('data:')) {
                                     const dataStr = line.substring(5).trimStart().trimEnd();
                                     if (dataStr === '[DONE]') {
+                                        if (DEBUG_CHAT_STREAM) {
+                                            console.log('[chat stream] SSE [DONE]');
+                                        }
                                         break;
                                     }
                                     if (!dataStr) continue;
                                     try {
                                         const event = JSON.parse(dataStr);
-                                        if (event.type === 'token' && event.content) {
+                                        const t = event.type;
+                                        if (t === 'token' && event.content) {
+                                            tokenEventCount += 1;
+                                            if (!firstTokenSeen) {
+                                                firstTokenSeen = true;
+                                                clearThinking();
+                                            }
+                                            if (DEBUG_CHAT_STREAM && !firstTokenLogged) {
+                                                firstTokenLogged = true;
+                                                console.log('[chat stream] first token', {
+                                                    preview: String(event.content).slice(0, 80),
+                                                    source: event.source,
+                                                });
+                                            }
+                                            if (DEBUG_CHAT_STREAM && tokenEventCount % 100 === 0) {
+                                                console.log('[chat stream] token progress', {
+                                                    tokenEventCount,
+                                                    bubbleLength: contentDiv.textContent.length + pendingText.length,
+                                                });
+                                            }
                                             pendingText += event.content;
-                                            scheduleFlush();
-                                        } else if (event.type === 'final') {
+                                            if (tokenEventCount % TOKEN_FLUSH_EVERY === 0) {
+                                                await new Promise((resolve) =>
+                                                    requestAnimationFrame(resolve)
+                                                );
+                                                flushPending();
+                                            }
+                                        } else if (t === 'final') {
+                                            if (DEBUG_CHAT_STREAM) {
+                                                console.log('[chat stream] final', {
+                                                    responseLen: (event.response || '').length,
+                                                    use_rag: event.use_rag,
+                                                    from_cache: event.from_cache,
+                                                    final_source: event.final_source,
+                                                });
+                                            }
                                             // Ensure any pending text is flushed before finalizing
                                             flushPending();
                                             if (event.response) {
@@ -503,23 +576,51 @@ document.addEventListener('DOMContentLoaded', () => {
                                                 metaDiv.textContent = `use_rag: ${event.use_rag}`;
                                             }
                                             scrollToBottom();
-                                        } else if (event.type === 'rollback') {
+                                        } else if (t === 'rollback') {
+                                            if (DEBUG_CHAT_STREAM) {
+                                                console.log('[chat stream] rollback', event.reason || '');
+                                            }
                                             contentDiv.textContent = '';
                                             metaDiv.textContent = 'Retrieval answer replaced after groundedness check';
                                             pendingText = '';
-                                            flushScheduled = false;
-                                        } else if (event.type === 'ping') {
-                                            // Keep-alive / proxy-flush event; ignore in UI.
-                                        } else if (event.type === 'error') {
+                                        } else if (t === 'ping') {
+                                            if (DEBUG_CHAT_STREAM) {
+                                                console.log('[chat stream] ping');
+                                            }
+                                        } else if (t === 'error') {
+                                            if (DEBUG_CHAT_STREAM) {
+                                                console.warn('[chat stream] error event', event.message);
+                                            }
                                             contentDiv.textContent += '\n[Error: ' + event.message + ']';
+                                        } else if (DEBUG_CHAT_STREAM) {
+                                            otherEventCounts[t] = (otherEventCounts[t] || 0) + 1;
                                         }
-                                    } catch (e) {}
+                                    } catch (e) {
+                                        if (DEBUG_CHAT_STREAM) {
+                                            console.warn('[chat stream] SSE line JSON parse failed', {
+                                                err: e,
+                                                dataPreview: dataStr.slice(0, 160),
+                                            });
+                                        }
+                                    }
                                 }
                             }
+                            // One network chunk may contain many SSE lines; flush so the UI can update before the next read.
+                            flushPending();
                         }
                     }
                     // Final flush in case stream ends mid-frame
                     flushPending();
+                    if (DEBUG_CHAT_STREAM) {
+                        console.log('[chat stream] stream closed', {
+                            readCount,
+                            bytesIn,
+                            tokenEventCount,
+                            flushCount,
+                            otherEventCounts,
+                            finalBubbleLength: contentDiv.textContent.length,
+                        });
+                    }
                 }
             } catch (err) {
                 contentDiv.textContent = `Error: ${err.message}`;
