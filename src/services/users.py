@@ -32,14 +32,11 @@ class Users:
         """Clear user's short-term memory cache."""
         return await self.short_term_memory.clear_user_cache(user_id)
 
-    async def list_active_chat_sessions(self, user_id: str) -> list[str]:
-        """List active chat session IDs for a user (from short-term memory / Redis)."""
-        return await self.short_term_memory.get_active_sessions(user_id)
+    async def list_active_chat_sessions(self, user_id: str) -> list[dict[str, str]]:
+        """List all chat sessions for a user with their titles from long-term memory (Postgres)."""
+        return await self.long_term_memory.get_all_sessions_with_metadata(user_id)
 
     async def get_chat_session_messages(self, user_id: str, session_id: str) -> dict[str, Any]:
-        """Get stored chat messages for a session (best-effort; may be empty if TTL expired)."""
-        ctx = await self.short_term_memory.get_conversation_context(session_id, user_id)
-        messages = (ctx or {}).get("context", {}).get("messages") or []
-        if not isinstance(messages, list):
-            messages = []
+        """Get stored chat messages for a session from long-term memory (Postgres)."""
+        messages = await self.long_term_memory.get_chat_history(user_id=user_id, session_id=session_id)
         return {"user_id": user_id, "session_id": session_id, "messages": messages}

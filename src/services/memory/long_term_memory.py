@@ -4,12 +4,13 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
-from sqlalchemy import Column, String, Text, Integer
+from sqlalchemy import Column, String, Text, Integer, ForeignKey
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 from sqlalchemy.future import select
+from pgvector.sqlalchemy import Vector
 from src.settings import SETTINGS
 from sqlalchemy.orm import mapped_column
 
@@ -31,6 +32,35 @@ class UserProfile(Base):
         TIMESTAMP(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class ChatMessage(Base):
+    """Table for storing chat history with vector embeddings for semantic search."""
+
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, index=True)
+    session_id = Column(String, index=True)
+    role = Column(String)  # 'user' or 'assistant'
+    content = Column(Text)
+    embedding = Column(Vector(1536))  # OpenAI embedding dimension (text-embedding-3-small)
+    created_at = Column(
+        TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class ChatSession(Base):
+    """Table for storing chat session metadata like titles."""
+
+    __tablename__ = "chat_sessions"
+
+    session_id = Column(String, primary_key=True)
+    user_id = Column(String, index=True)
+    title = Column(String)
+    created_at = Column(
+        TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
 
@@ -61,8 +91,137 @@ class LongTermMemoryService:
             await conn.run_sync(Base.metadata.create_all)
 
     async def initialize(self):
-        """Initialize the service by creating tables."""
+        """Initialize the service by creating tables and extensions."""
+        async with self.engine.begin() as conn:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await self.create_tables()
+
+    async def _get_embedding(self, text: str) -> List[float]:
+        """Generate embedding for the given text using LiteLLM."""
+        import litellm
+
+        try:
+            response = await litellm.aembedding(
+                model="text-embedding-3-small",
+                input=[text],
+                api_base=SETTINGS.OPENAI_BASE_URL,
+                api_key=SETTINGS.OPENAI_API_KEY.get_secret_value(),
+            )
+            return response.data[0]["embedding"]
+        except Exception as e:
+            print(f"Error generating embedding: {e}")
+            # Fallback to zeros (1536 is the dimension for text-embedding-3-small)
+            return [0.0] * 1536
+
+    async def store_chat_message(
+        self, user_id: str, session_id: str, role: str, content: str
+    ) -> None:
+        """Store a chat message and its embedding in Postgres."""
+        embedding = await self._get_embedding(content)
+        async with self.async_session() as session:
+            message = ChatMessage(
+                user_id=user_id,
+                session_id=session_id,
+                role=role,
+                content=content,
+                embedding=embedding,
+            )
+            session.add(message)
+            await session.commit()
+
+    async def get_chat_history(
+        self, user_id: str, session_id: str, limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """Retrieve chat history for a specific session."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(ChatMessage)
+                .filter(
+                    ChatMessage.user_id == user_id, ChatMessage.session_id == session_id
+                )
+                .order_by(ChatMessage.created_at.asc())
+                .limit(limit)
+            )
+            messages = result.scalars().all()
+            return [
+                {
+                    "role": msg.role,
+                    "content": msg.content,
+                    "created_at": msg.created_at.isoformat(),
+                }
+                for msg in messages
+            ]
+
+    async def get_all_sessions(self, user_id: str) -> List[str]:
+        """Get all unique session IDs for a user from long-term memory."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(ChatMessage.session_id)
+                .filter(ChatMessage.user_id == user_id)
+                .distinct()
+            )
+            return [row[0] for row in result.all()]
+
+    async def get_all_sessions_with_metadata(self, user_id: str) -> List[Dict[str, str]]:
+        """Get all sessions with their titles and IDs."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(ChatSession)
+                .filter(ChatSession.user_id == user_id)
+                .order_by(ChatSession.created_at.desc())
+            )
+            sessions = result.scalars().all()
+            return [{"id": s.session_id, "title": s.title} for s in sessions]
+
+    async def create_chat_session(
+        self, session_id: str, user_id: str, title: str
+    ) -> None:
+        """Create a new chat session with a title."""
+        async with self.async_session() as session:
+            chat_session = ChatSession(
+                session_id=session_id, user_id=user_id, title=title
+            )
+            session.add(chat_session)
+            await session.commit()
+
+    async def get_chat_session(
+        self, session_id: str, user_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Get chat session metadata."""
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(ChatSession).filter(
+                    ChatSession.session_id == session_id, ChatSession.user_id == user_id
+                )
+            )
+            s = result.scalar_one_or_none()
+            if s:
+                return {"session_id": s.session_id, "title": s.title}
+            return None
+
+    async def search_chat_messages(
+        self, user_id: str, query: str, limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        """Semantic search over chat history using cosine distance."""
+        query_embedding = await self._get_embedding(query)
+        async with self.async_session() as session:
+            # Using pgvector distance operator <=> for cosine distance
+            result = await session.execute(
+                select(ChatMessage)
+                .filter(ChatMessage.user_id == user_id)
+                .order_by(ChatMessage.embedding.cosine_distance(query_embedding))
+                .limit(limit)
+            )
+            messages = result.scalars().all()
+            return [
+                {
+                    "role": msg.role,
+                    "content": msg.content,
+                    "session_id": msg.session_id,
+                    "created_at": msg.created_at.isoformat(),
+                }
+                for msg in messages
+            ]
     
     async def get_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get user profile by user_id."""

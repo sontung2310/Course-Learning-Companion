@@ -57,7 +57,7 @@ async def clear_user_session(
 @router.get(
     "/chat-sessions/{user_id}",
     status_code=status.HTTP_200_OK,
-    response_model=List[str],
+    response_model=List[Dict[str, str]],
 )
 async def list_active_chat_sessions(
     user_id: str,

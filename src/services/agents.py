@@ -146,6 +146,32 @@ class LearningOrchestrator:
             embedding_model="text-embedding-3-small",
         )
 
+    async def _generate_session_title(self, first_message: str) -> str:
+        """Generate a very short, concise title for a chat session using LiteLLM."""
+        import litellm
+
+        try:
+            prompt = (
+                "Generate a very short, concise title (max 5-6 words) for a chat session "
+                f"based on this first message: '{first_message}'. Return only the title text, "
+                "no quotes or extra explanation."
+            )
+            response = await litellm.acompletion(
+                model="gpt-api",
+                messages=[{"role": "user", "content": prompt}],
+                base_url=SETTINGS.OPENAI_BASE_URL,
+                api_key=SETTINGS.OPENAI_API_KEY.get_secret_value(),
+                temperature=0.7,
+                max_tokens=20,
+            )
+            title = response.choices[0].message.content.strip()
+            # Clean up quotes if any
+            title = title.strip('"').strip("'")
+            return title
+        except Exception as e:
+            print(f"Error generating session title: {e}")
+            return "New Chat"
+
     async def _get_cached_answer(
         self,
         question: str,
@@ -269,7 +295,30 @@ class LearningOrchestrator:
                 context={"messages": messages},
                 ttl_minutes=ttl_minutes,
             )
-            print(f"Chat history updated for session {session_id} and user {user_id}: {messages}")
+
+            # Also store each message in long-term memory (Postgres)
+            if u:
+                await self._long_term_memory.store_chat_message(
+                    user_id=user_id, session_id=session_id, role="user", content=u
+                )
+            if a:
+                await self._long_term_memory.store_chat_message(
+                    user_id=user_id, session_id=session_id, role="assistant", content=a
+                )
+
+            # Handle session title generation if it doesn't exist
+            if session_id and user_id:
+                existing_session = await self._long_term_memory.get_chat_session(
+                    session_id, user_id
+                )
+                if not existing_session and u:
+                    title = await self._generate_session_title(u)
+                    await self._long_term_memory.create_chat_session(
+                        session_id, user_id, title
+                    )
+                    print(f"Created session title for {session_id}: {title}")
+
+            print(f"Chat history updated for session {session_id} and user {user_id}")
         except Exception as e:
             print(f"Error updating conversation context: {e}")
 
