@@ -156,11 +156,12 @@ class LearningOrchestrator:
                 f"based on this first message: '{first_message}'. Return only the title text, "
                 "no quotes or extra explanation."
             )
+            # Use the already-configured LLM settings from your agents service
             response = await litellm.acompletion(
-                model="gpt-api",
+                model="openai/gpt-api",  # Add openai/ prefix so LiteLLM knows the protocol
                 messages=[{"role": "user", "content": prompt}],
-                base_url=SETTINGS.OPENAI_BASE_URL,
-                api_key=SETTINGS.OPENAI_API_KEY.get_secret_value(),
+                base_url=self.agents.gpt_llm.base_url or SETTINGS.OPENAI_BASE_URL,
+                api_key=self.agents.gpt_llm.api_key or SETTINGS.OPENAI_API_KEY.get_secret_value(),
                 temperature=0.7,
                 max_tokens=20,
             )
