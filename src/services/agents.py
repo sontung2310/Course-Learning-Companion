@@ -169,7 +169,9 @@ class LearningOrchestrator:
             title = title.strip('"').strip("'")
             return title
         except Exception as e:
-            print(f"Error generating session title: {e}")
+            print(f"Error generating session title for message '{first_message[:50]}...': {e}")
+            import traceback
+            traceback.print_exc()
             return "New Chat"
 
     async def _get_cached_answer(
@@ -237,7 +239,7 @@ class LearningOrchestrator:
             else:
                 response = str(guardrails_result) if guardrails_result else ""
             print(f"Guardrails result: {response}")
-            # await self._append_to_chat_history(session_id, user_id, question, response)
+            await self._append_to_chat_history(session_id, user_id, question, response)
             return {"response": response, "use_rag": None}
         print("No guardrails service provided, proceeding with LLM generation.")
         result = await self.answer_question(question, session_id, user_id)

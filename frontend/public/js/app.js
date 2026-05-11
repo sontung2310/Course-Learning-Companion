@@ -357,20 +357,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
             sessionIds.forEach((sessionId) => {
                 const card = document.createElement('div');
-                const isActive = currentSessionId && sessionId === currentSessionId;
+                const isActive = currentSessionId && sessionId.id === currentSessionId;
                 card.className = `p-4 rounded-xl bg-white border border-slate-100 shadow-sm hover:shadow-md transition-all cursor-pointer group ${isActive ? 'ring-2 ring-primary-container/60' : ''}`;
                 card.innerHTML = `
                     <div class="flex justify-between items-start mb-2">
                         <span class="px-2 py-0.5 rounded-full bg-primary-container/20 text-on-primary-container text-[10px] font-bold uppercase tracking-wider">Session</span>
                         <span class="text-[10px] text-slate-400">${isActive ? 'Active' : ''}</span>
                     </div>
-                    <h3 class="text-sm font-semibold text-slate-700 group-hover:text-primary transition-colors">Chat ${sessionId}</h3>
+                    <h3 class="text-sm font-semibold text-slate-700 group-hover:text-primary transition-colors">${sessionId.title || 'Chat ' + sessionId.id}</h3>
                     <p class="text-xs text-slate-500 mt-1 line-clamp-1">Click to load messages</p>
                 `;
                 card.addEventListener('click', async () => {
-                    localStorage.setItem('chatSessionId', sessionId);
+                    localStorage.setItem('chatSessionId', sessionId.id);
                     renderRecentSessions(sessionIds);
-                    await loadSessionMessages(sessionId);
+                    await loadSessionMessages(sessionId.id);
                 });
                 recentSessionsList.appendChild(card);
             });
